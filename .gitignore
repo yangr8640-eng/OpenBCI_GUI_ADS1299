@@ -1,0 +1,34 @@
+# Local recordings and runtime logs
+UserData/Recordings/
+UserData/Console_Data/
+UserData/Processed_Data/
+UserData/PlaybackHistory/
+
+# Build outputs and local checks
+build_check/
+Source/build_check/
+*.class
+
+# Downloaded installers and local Processing runtime
+downloads/
+Processing-3.5.4/
+
+# Nested repository metadata from the source checkout
+Source/.git/
+
+# Python caches and generated analysis outputs
+__pycache__/
+*.py[cod]
+AnalysisTools/__pycache__/
+AnalysisTools/filtered_data/
+AnalysisTools/analysis_ready/
+AnalysisTools/figures/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local shortcuts are machine-specific
+*.lnk
