@@ -15,7 +15,10 @@ import pandas as pd
 from scipy import signal
 
 
-DEFAULT_RECORDINGS_DIR = Path("D:/OpenBCI_GUI_ADS1299/UserData/Recordings")
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+DEFAULT_RECORDINGS_DIR = PROJECT_ROOT / "UserData" / "Recordings"
+DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "filtered_data"
 
 
 def parse_openbci_header(path: Path) -> dict[str, float | int | str]:
@@ -188,7 +191,7 @@ def main() -> None:
     parser.add_argument("--input", type=Path, default=None, help="OpenBCI-RAW-*.txt file to process")
     parser.add_argument("--recordings-dir", type=Path, default=DEFAULT_RECORDINGS_DIR)
     parser.add_argument("--min-bytes", type=int, default=10_000, help="minimum file size for auto-pick")
-    parser.add_argument("--output-dir", type=Path, default=Path("filtered_data"))
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--lowcut", type=float, default=0.5, help="high-pass edge in Hz; use 0 to disable")
     parser.add_argument("--highcut", type=float, default=40.0, help="low-pass edge in Hz; use 0 to disable")
     parser.add_argument("--notch", type=float, default=50.0, help="notch frequency in Hz; use 0 to disable")
@@ -199,7 +202,13 @@ def main() -> None:
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
-    input_path = args.input or find_latest_raw_file(args.recordings_dir, args.min_bytes)
+    recordings_dir = args.recordings_dir.expanduser().resolve()
+    output_dir = args.output_dir.expanduser().resolve()
+    input_path = (
+        args.input.expanduser().resolve()
+        if args.input
+        else find_latest_raw_file(recordings_dir, args.min_bytes)
+    )
     lowcut = args.lowcut if args.lowcut > 0 else None
     highcut = args.highcut if args.highcut > 0 else None
     notch = args.notch if args.notch > 0 else None
@@ -207,9 +216,9 @@ def main() -> None:
     original, exg, exg_columns, sample_rate = read_openbci_raw(input_path)
     filtered = apply_filters(exg, sample_rate, lowcut, highcut, notch, args.notch_q, args.order)
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     stem = make_output_stem(input_path, lowcut, highcut, notch)
-    csv_path = args.output_dir / f"{stem}.csv"
+    csv_path = output_dir / f"{stem}.csv"
     write_filtered_csv(original, exg_columns, filtered, csv_path)
 
     print(f"Input: {input_path}")
@@ -219,7 +228,7 @@ def main() -> None:
     print(f"Filtered CSV: {csv_path}")
 
     if not args.no_plot:
-        png_path = args.output_dir / f"{stem}_preview.png"
+        png_path = output_dir / f"{stem}_preview.png"
         write_preview_plot(
             exg,
             filtered,

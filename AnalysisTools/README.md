@@ -4,14 +4,14 @@ These scripts are copied from the EEG working folder and adjusted for this GUI p
 
 ## Folders
 
-- Raw GUI recordings: `D:\OpenBCI_GUI_ADS1299\UserData\Recordings`
-- Filtered outputs: `D:\OpenBCI_GUI_ADS1299\AnalysisTools\filtered_data`
-- Analysis-ready outputs: `D:\OpenBCI_GUI_ADS1299\AnalysisTools\analysis_ready`
+- Raw GUI recordings: `<project>\UserData\Recordings`
+- Filtered outputs: `<project>\AnalysisTools\filtered_data`
+- Analysis-ready outputs: `<project>\AnalysisTools\analysis_ready`
 
-Run commands from this folder in PowerShell:
+Run commands from the `AnalysisTools` folder in PowerShell:
 
 ```powershell
-Set-Location D:\OpenBCI_GUI_ADS1299\AnalysisTools
+Set-Location <project>\AnalysisTools
 ```
 
 ## 1. Filter Latest OpenBCI Raw Recording
@@ -20,7 +20,7 @@ Set-Location D:\OpenBCI_GUI_ADS1299\AnalysisTools
 python filter_openbci_raw.py
 ```
 
-This finds the latest `OpenBCI-RAW-*.txt` under `UserData\Recordings`, applies the default 50 Hz notch and 0.5-40 Hz bandpass filters, then writes CSV output to `filtered_data`.
+This finds the latest `OpenBCI-RAW-*.txt` under `<project>\UserData\Recordings`, applies the default 50 Hz notch and 0.5-40 Hz bandpass filters, then writes CSV output to `<project>\AnalysisTools\filtered_data`.
 
 ## 2. Prepare Paradigm Analysis Tables
 
