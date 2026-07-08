@@ -313,6 +313,8 @@ public DataSourcePlayback getDataSourcePlaybackClassFromFile(String path) {
             return new DataSourcePlaybackGanglion(path);
         case ("BoardBrainFlowSynthetic"):
             return new DataSourcePlaybackSynthetic(path);
+        case ("BoardADS129xTcp"):
+            return new DataSourcePlaybackADS129xTcp(path);
         default:
             return null;
     }
