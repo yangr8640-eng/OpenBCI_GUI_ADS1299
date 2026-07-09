@@ -304,8 +304,7 @@ class W_Spectrogram extends Widget {
      * a vertical color gradient — red at the top (0dB, high power),
      * blue at the bottom (-40dB, low power).
      *
-     * Uses horizontal banding for performance: the plot is split into
-     * ~40 horizontal bands (1 per dB), each drawn with its own color.
+     * Uses filled rectangles for clean, crisp horizontal color bands.
      */
     private void drawHeatmapPSD(float[] data) {
         if (data == null || data.length < 2) return;
@@ -313,38 +312,38 @@ class W_Spectrogram extends Widget {
         int n = min(data.length, numDisplayBins);
         float baselineY = graphY + graphH;
 
-        int bands = 40;   // one band per dB
+        int bands = 80;   // more bands = smoother gradient
         float bandH = graphH / (float)bands;
 
+        noStroke();
         for (int band = 0; band < bands; band++) {
-            float bandY = graphY + (band + 0.5f) * bandH;  // center of this band
-            // band 0 = top (red, near 0dB), band 39 = bottom (blue, near -40dB)
+            float bandTop = graphY + band * bandH;
+            float bandMidY = graphY + (band + 0.5f) * bandH;
+            // band 0 = top (red, near 0dB), band N-1 = bottom (blue, near -40dB)
             float frac = (float)band / (float)(bands - 1);
             color bandColor = lerpColor(lowPowerColor, highPowerColor, 1.0f - frac);
+            fill(bandColor);
 
-            stroke(bandColor);
-            strokeWeight(max(1.0f, bandH + 0.5f));
-
-            // Draw horizontal line segments across freq bins above this band
+            // Draw filled rectangular segments across freq bins above this band
             boolean drawing = false;
             float segStart = 0;
             for (int i = 0; i < n; i++) {
                 float px = graphX + (float)i / (numDisplayBins - 1) * graphW;
                 float dataY = graphY + (1.0f - data[i]) * graphH;
                 dataY = constrain(dataY, graphY, baselineY);
-                boolean above = (dataY <= bandY);
+                boolean above = (dataY <= bandMidY);
 
                 if (above && !drawing) {
                     segStart = px;
                     drawing = true;
                 } else if (!above && drawing) {
-                    line(segStart, bandY, px, bandY);
+                    rect(segStart, bandTop, px - segStart, bandH);
                     drawing = false;
                 }
             }
             if (drawing) {
                 float lastX = graphX + (float)(n - 1) / (numDisplayBins - 1) * graphW;
-                line(segStart, bandY, lastX, bandY);
+                rect(segStart, bandTop, lastX - segStart, bandH);
             }
         }
 
