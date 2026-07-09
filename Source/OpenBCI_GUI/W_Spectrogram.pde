@@ -53,6 +53,8 @@ class W_Spectrogram extends Widget {
     private float[] workBuffer;            // reused float buffer for FFT input
     private float dBMin = -40.0f;
     private float dBMax = 0.0f;
+    private int currentDBRange = 1;      // index into dbRangeOptions
+    private final int[] dbRangeOptions = {-20, -40, -60, -80, -100};
 
     // Gradient endpoints: red = high power (0dB), blue = low power (-40dB)
     private final color highPowerColor = #FF3030;
@@ -84,12 +86,14 @@ class W_Spectrogram extends Widget {
         settings.spectMaxFrqSave = 1;
         settings.spectFreqScaleSave = 0;
         settings.spectColormapSave = 0;
+        settings.spectDBRangeSave = currentDBRange;
         vertAxisLabel = vertAxisLabels[settings.spectMaxFrqSave];
 
         // Set up dropdowns
         addDropdown("SpectrogramMaxFreq", "Max Freq", Arrays.asList(settings.spectMaxFrqArray), settings.spectMaxFrqSave);
         addDropdown("SpectrogramFreqScale", "Freq Scale", Arrays.asList("Linear", "Mel"), settings.spectFreqScaleSave);
         addDropdown("SpectrogramColormap", "Colormap", Arrays.asList("Inferno", "Jet", "Viridis", "BlueGreen"), settings.spectColormapSave);
+        addDropdown("SpectrogramDBRange", "dB Range", Arrays.asList("0 to -20 dB", "0 to -40 dB", "0 to -60 dB", "0 to -80 dB", "0 to -100 dB"), settings.spectDBRangeSave);
 
         // Determine initial number of display bins
         numDisplayBins = fftBuff[0].specSize();
@@ -635,4 +639,10 @@ void SpectrogramColormap(int n) {
     // Colormap dropdown no longer used for theme selection;
     // color is now fixed red→blue gradient by power level.
     // Keeping callback to avoid breaking settings persistence.
+}
+
+void SpectrogramDBRange(int n) {
+    settings.spectDBRangeSave = n;
+    w_spectrogram.currentDBRange = n;
+    w_spectrogram.dBMin = w_spectrogram.dbRangeOptions[n];
 }
