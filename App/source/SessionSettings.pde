@@ -86,8 +86,10 @@ class SessionSettings {
     int minNumRowsPlaybackFile = int(currentBoard.getSampleRate());
     //Spectrogram Widget settings
     int spectMaxFrqSave;
-    int spectSampleRateSave;
-    int spectLogLinSave;
+    int spectFreqScaleSave;   // 0=Linear, 1=Mel
+    int spectColormapSave;    // 0=Inferno, 1=Jet, 2=Viridis, 3=BlueGreen
+    int spectDBRangeSave;     // index 0=-20, 1=-40, 2=-60, 3=-80, 4=-100 dB
+    int spectSmoothingSave;   // index 0=None, 1=Light, 2=Medium, 3=Heavy, 4=Max
 
     //default configuration settings file location and file name variables
     private String sessionPath = "";
@@ -143,7 +145,6 @@ class SessionSettings {
 
     //Used to set text in dropdown menus when loading Spectrogram Setings
     String[] spectMaxFrqArray = {"20 Hz", "40 Hz", "60 Hz", "100 Hz", "120 Hz", "250 Hz"};
-    String[] spectSampleRateArray = {"30 Min.", "6 Min.", "3 Min.", "1.5 Min.", "1 Min."};
 
     //Load Accel. dropdown variables
     int loadAccelVertScale;
@@ -174,8 +175,10 @@ class SessionSettings {
     List<Integer> loadSpectActiveChanTop = new ArrayList<Integer>();
     List<Integer> loadSpectActiveChanBot = new ArrayList<Integer>();
     int spectMaxFrqLoad;
-    int spectSampleRateLoad;
-    int spectLogLinLoad;
+    int spectFreqScaleLoad;
+    int spectColormapLoad;
+    int spectDBRangeLoad;
+    int spectSmoothingLoad;
 
     //Networking Settings save/load variables
     int nwProtocolLoad;
@@ -460,8 +463,10 @@ class SessionSettings {
         saveSpectrogramSettings.setJSONArray("activeChannelsBot", saveActiveChanSpectBot);
         //Save Spectrogram_Max Freq Setting. The max frq variable is updated every time the user selects a dropdown in the spectrogram widget
         saveSpectrogramSettings.setInt("Spectrogram_Max Freq", spectMaxFrqSave);
-        saveSpectrogramSettings.setInt("Spectrogram_Sample Rate", spectSampleRateSave);
-        saveSpectrogramSettings.setInt("Spectrogram_LogLin", spectLogLinSave);
+        saveSpectrogramSettings.setInt("Spectrogram_FreqScale", spectFreqScaleSave);
+        saveSpectrogramSettings.setInt("Spectrogram_Colormap", spectColormapSave);
+        saveSpectrogramSettings.setInt("Spectrogram_dB Range", spectDBRangeSave);
+        saveSpectrogramSettings.setInt("Spectrogram_Smoothing", spectSmoothingSave);
         saveSettingsJSONData.setJSONObject(kJSONKeySpectrogram, saveSpectrogramSettings);
 
         ///////////////////////////////////////////////Setup new JSON object to save EMG Settings
@@ -653,8 +658,10 @@ class SessionSettings {
                 loadSpectActiveChanBot.add(loadSpectChanBot.getInt(i));
             }
             spectMaxFrqLoad = loadSpectSettings.getInt("Spectrogram_Max Freq");
-            spectSampleRateLoad = loadSpectSettings.getInt("Spectrogram_Sample Rate");
-            spectLogLinLoad = loadSpectSettings.getInt("Spectrogram_LogLin");
+            spectFreqScaleLoad = loadSpectSettings.getInt("Spectrogram_FreqScale", 0);
+            spectColormapLoad = loadSpectSettings.getInt("Spectrogram_Colormap", 0);
+            spectDBRangeLoad = loadSpectSettings.getInt("Spectrogram_dB Range", 1);
+            spectSmoothingLoad = loadSpectSettings.getInt("Spectrogram_Smoothing", 1);  // default "Light"
             //println(loadSpectActiveChanTop, loadSpectActiveChanBot);
         } catch (Exception e) {
             e.printStackTrace();
@@ -816,10 +823,18 @@ class SessionSettings {
         //Apply Max Freq dropdown
         SpectrogramMaxFreq(spectMaxFrqLoad);
             w_spectrogram.cp5_widget.getController("SpectrogramMaxFreq").getCaptionLabel().setText(spectMaxFrqArray[spectMaxFrqLoad]);
-        SpectrogramSampleRate(spectSampleRateLoad);
-            w_spectrogram.cp5_widget.getController("SpectrogramSampleRate").getCaptionLabel().setText(spectSampleRateArray[spectSampleRateLoad]);
-        SpectrogramLogLin(spectLogLinLoad);
-            w_spectrogram.cp5_widget.getController("SpectrogramLogLin").getCaptionLabel().setText(fftLogLinArray[spectLogLinLoad]);
+        SpectrogramFreqScale(spectFreqScaleLoad);
+            String[] freqScaleLabels = {"Linear", "Mel"};
+            w_spectrogram.cp5_widget.getController("SpectrogramFreqScale").getCaptionLabel().setText(freqScaleLabels[spectFreqScaleLoad]);
+        SpectrogramColormap(spectColormapLoad);
+            String[] cmapLabels = {"Inferno", "Jet", "Viridis", "BlueGreen"};
+            w_spectrogram.cp5_widget.getController("SpectrogramColormap").getCaptionLabel().setText(cmapLabels[spectColormapLoad]);
+        SpectrogramDBRange(spectDBRangeLoad);
+            String[] dbRangeLabels = {"0 to -20 dB", "0 to -40 dB", "0 to -60 dB", "0 to -80 dB", "0 to -100 dB"};
+            w_spectrogram.cp5_widget.getController("SpectrogramDBRange").getCaptionLabel().setText(dbRangeLabels[spectDBRangeLoad]);
+        SpectrogramSmoothing(spectSmoothingLoad);
+            String[] smoothLabels = {"None", "Light", "Medium", "Heavy", "Max"};
+            w_spectrogram.cp5_widget.getController("SpectrogramSmoothing").getCaptionLabel().setText(smoothLabels[spectSmoothingLoad]);
         try {
             //apply channel checkbox settings
             w_spectrogram.spectChanSelectTop.deactivateAllButtons();

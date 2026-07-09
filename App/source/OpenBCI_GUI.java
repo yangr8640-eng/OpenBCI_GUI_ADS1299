@@ -453,6 +453,7 @@ final int navBarHeight = 32;
 TopNav topNav;
 
 ddf.minim.analysis.FFT[] fftBuff = new ddf.minim.analysis.FFT[nchan];    //from the minim library
+ddf.minim.analysis.FFT[] fftBuffSpectrogram = new ddf.minim.analysis.FFT[nchan]; //unsmoothed FFT for spectrogram widget
 boolean isFFTFiltered = true; //yes by default ... this is used in dataProcessing.pde to determine which uV array feeds the FFT calculation
 
 StringBuilder globalScreenResolution;
@@ -477,7 +478,7 @@ public void settings() {
         win_w = 980;
         win_h = 580;
     }
-    size(win_w, win_h, P2D);
+    size(win_w, win_h, JAVA2D);
 
     globalScreenResolution = new StringBuilder("Screen Resolution: ");
     globalScreenResolution.append(displayWidth);
@@ -932,6 +933,8 @@ public void initFFTObjectsAndBuffer() {
     for (int Ichan=0; Ichan < nchan; Ichan++) {
         // verbosePrint("Init FFT Buff – " + Ichan);
         fftBuff[Ichan] = new ddf.minim.analysis.FFT(getNfftSafe(), currentBoard.getSampleRate());
+        fftBuffSpectrogram[Ichan] = new ddf.minim.analysis.FFT(getNfftSafe(), currentBoard.getSampleRate());
+        fftBuffSpectrogram[Ichan].window(FFT.HAMMING);
     }  //make the FFT objects
 
     //Attempt initialization. If error, print to console and exit function.
@@ -4730,6 +4733,119 @@ public class Buffer<T> extends LinkedList<T> {
         }
         return Math.min(numSamples, this.size());
     }
+}
+//////////////////////////////////////////////////////
+//                                                  //
+//                  Colormaps.pde                    //
+//                                                  //
+//    Color LUT provider for spectrogram display    //
+//    Precomputed 256-entry colormap lookup tables  //
+//                                                  //
+//////////////////////////////////////////////////////
+
+// Keypoint-based colormap definitions.
+// Each keypoint is {R, G, B, position} with position from 0.0 to 1.0.
+// RGB values are 0-255.
+
+final float[][] INFERNO_KEYS = {
+  {  0,   0,   4, 0.00f},   // near-black
+  { 40,  11,  84, 0.15f},   // dark purple
+  {101,  21, 110, 0.30f},   // purple
+  {159,  42,  99, 0.45f},   // magenta-red
+  {212,  72,  66, 0.60f},   // red
+  {245, 125,  21, 0.80f},   // orange
+  {252, 255, 164, 1.00f}    // yellow-white
+};
+
+final float[][] JET_KEYS = {
+  {  0,   0, 131, 0.00f},   // dark blue
+  {  0,  60, 170, 0.15f},   // blue
+  {  5, 255, 255, 0.35f},   // cyan
+  {255, 255,   0, 0.55f},   // yellow
+  {255, 100,   0, 0.75f},   // orange
+  {128,   0,   0, 1.00f}    // dark red
+};
+
+final float[][] VIRIDIS_KEYS = {
+  { 68,   1,  84, 0.00f},   // dark purple
+  { 59,  82, 139, 0.20f},   // blue
+  { 33, 145, 140, 0.45f},   // teal
+  { 94, 201,  98, 0.65f},   // green
+  {253, 231,  37, 1.00f}    // yellow
+};
+
+final float[][] BLUEGREEN_KEYS = {
+  {  0,   0,  64, 0.00f},   // navy
+  {  0,  64, 128, 0.15f},   // dark blue
+  {  0, 128, 128, 0.30f},   // teal
+  {  0, 192,  96, 0.50f},   // green
+  {128, 255,   0, 0.70f},   // lime
+  {255, 255, 128, 0.85f},   // pale yellow
+  {255, 255, 255, 1.00f}    // white
+};
+
+// Lookup table size constant
+final int COLORMAP_LUT_SIZE = 256;
+
+/**
+ * Build a color lookup table from keypoint definitions.
+ * Linearly interpolates RGB between consecutive keypoints.
+ * Uses Processing's color() function for the output.
+ *
+ * @param keypoints  array of {R, G, B, position} arrays, sorted by position
+ * @param lutSize    number of entries in the output LUT (typically 256)
+ * @return           color[] of Processing color values
+ */
+public int[] buildColormapLUT(float[][] keypoints, int lutSize) {
+  int[] lut = new int[lutSize];
+
+  for (int i = 0; i < lutSize; i++) {
+    float t = (float)i / (float)(lutSize - 1);
+
+    // Find the two surrounding keypoints
+    int klo = 0;
+    int khi = keypoints.length - 1;
+    for (int k = 0; k < keypoints.length - 1; k++) {
+      if (t >= keypoints[k][3] && t <= keypoints[k + 1][3]) {
+        klo = k;
+        khi = k + 1;
+        break;
+      }
+    }
+
+    // Linear interpolation between klo and khi
+    float segStart = keypoints[klo][3];
+    float segEnd   = keypoints[khi][3];
+    float frac;
+    if (segEnd == segStart) {
+      frac = 0.0f;
+    } else {
+      frac = (t - segStart) / (segEnd - segStart);
+    }
+    frac = constrain(frac, 0.0f, 1.0f);
+
+    int r = (int)(keypoints[klo][0] + frac * (keypoints[khi][0] - keypoints[klo][0]));
+    int g = (int)(keypoints[klo][1] + frac * (keypoints[khi][1] - keypoints[klo][1]));
+    int b = (int)(keypoints[klo][2] + frac * (keypoints[khi][2] - keypoints[klo][2]));
+
+    lut[i] = color(r, g, b);
+  }
+
+  return lut;
+}
+
+/**
+ * Convenience: get a prebuilt LUT by colormap index.
+ * 0 = Inferno, 1 = Jet, 2 = Viridis, 3 = BlueGreen
+ */
+public int[] getColormapLUT(int index) {
+  switch (index) {
+    case 0:  return buildColormapLUT(INFERNO_KEYS, COLORMAP_LUT_SIZE);
+    case 1:  return buildColormapLUT(JET_KEYS, COLORMAP_LUT_SIZE);
+    case 2:  return buildColormapLUT(VIRIDIS_KEYS, COLORMAP_LUT_SIZE);
+    case 3:
+    default: return buildColormapLUT(BLUEGREEN_KEYS, COLORMAP_LUT_SIZE);
+  }
 }
 ////////////////////////////////////////////////////////////
 //                 ConsoleLog.pde                         //
@@ -8545,8 +8661,6 @@ class InitBox {
         initSystemButton.getCaptionLabel().setText(text);
     }
 };
-
-
 //=======================================================================================================================================
 //
 //                    Custom Cp5 Classes and Methods
@@ -10455,8 +10569,39 @@ public DataSourcePlayback getDataSourcePlaybackClassFromFile(String path) {
             return new DataSourcePlaybackGanglion(path);
         case ("BoardBrainFlowSynthetic"):
             return new DataSourcePlaybackSynthetic(path);
+        case ("BoardADS129xTcp"):
+            return new DataSourcePlaybackADS129xTcp(path);
         default:
             return null;
+    }
+}
+class DataSourcePlaybackADS129xTcp extends DataSourcePlayback implements FileBoard  {
+   
+    DataSourcePlaybackADS129xTcp(String filePath) {
+        super(filePath);
+    }
+
+    @Override
+    protected boolean instantiateUnderlyingBoard() {
+        try {
+            underlyingBoard = new BoardADS129xTcp(0, getSampleRate()) {
+                @Override
+                protected boolean initializeInternal() {
+                    return true;
+                }
+
+                @Override
+                protected void uninitializeInternal() {
+                    // No-op for playback-only mode.
+                }
+            };
+        } catch (Exception e) {
+            println(e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+
+        return underlyingBoard != null;
     }
 }
 class DataSourcePlaybackCyton extends DataSourcePlayback implements AccelerometerCapableBoard, AnalogCapableBoard, DigitalCapableBoard, FileBoard  {
@@ -17293,6 +17438,160 @@ class InterfaceSerial {
 
 
 };
+//////////////////////////////////////////////////////
+//                                                  //
+//               MelFilterBank.pde                   //
+//                                                  //
+//  Creates triangular mel-scale filterbanks and    //
+//  applies them to linear FFT magnitude spectra.   //
+//  Pure Java — no Processing dependencies.         //
+//                                                  //
+//////////////////////////////////////////////////////
+
+/**
+ * A mel-frequency filterbank using standard overlapping triangular filters.
+ *
+ * Construction precomputes a weight matrix so that applying the filterbank
+ * to a linear spectrum is a single matrix multiplication per frame.
+ */
+class MelFilterBank {
+
+  int nFFT;           // number of FFT bins in the LINEAR input spectrum (= specSize)
+  int nMels;           // number of mel bands to output
+  float sampleRate;    // sample rate in Hz
+  float fMin;          // lowest frequency (Hz)
+  float fMax;          // highest frequency (Hz)
+
+  float[][] weights;   // [nMels][nFFT] — precomputed filter weights
+  int[] binIndices;    // cache: which linear bin index each mel band center corresponds to
+
+  /**
+   * Mel scale conversion (O'Shaughnessy's formula, used by librosa).
+   */
+  public float hzToMel(float hz) {
+    return 2595.0f * (float)Math.log10(1.0f + hz / 700.0f);
+  }
+
+  public float melToHz(float mel) {
+    return 700.0f * (float)(Math.pow(10.0f, mel / 2595.0f) - 1.0f);
+  }
+
+  /**
+   * @param _nFFT        number of FFT bins in the input (e.g., fft.specSize())
+   * @param _nMels       desired number of mel bands
+   * @param _sampleRate  sample rate in Hz
+   * @param _fMin        lowest center frequency in Hz (usually 0 or 0.5)
+   * @param _fMax        highest center frequency in Hz
+   */
+  MelFilterBank(int _nFFT, int _nMels, float _sampleRate, float _fMin, float _fMax) {
+    nFFT = _nFFT;
+    nMels = _nMels;
+    sampleRate = _sampleRate;
+    fMin = max(_fMin, 0.0f);
+    fMax = min(_fMax, sampleRate / 2.0f);
+
+    weights = new float[nMels][nFFT];
+    binIndices = new int[nMels];
+    buildFilterbank();
+  }
+
+  /**
+   * Precompute the triangular overlapping filter weights matrix.
+   *
+   * For each mel band m:
+   *   - The mel center for band m is the equispaced point between mel(fMin) and mel(fMax)
+   *   - The triangular filter for band m spans from centre of band m-1 to center of band m+1
+   *   - Weights sum to 1 across each filter (normalized by area)
+   */
+  private void buildFilterbank() {
+    float melMin = hzToMel(fMin);
+    float melMax = hzToMel(fMax);
+    float melStep = (melMax - melMin) / (nMels + 1);
+
+    // Precompute the FFT bin center frequency for every bin
+    float[] binFreqs = new float[nFFT];
+    for (int b = 0; b < nFFT; b++) {
+      binFreqs[b] = b * sampleRate / (2.0f * (nFFT - 1));  // Nyquist = nFFT-1
+    }
+
+    for (int m = 0; m < nMels; m++) {
+      // Mel center frequencies for this triangular filter:
+      // left foot = mel band m, center = mel band m+1, right foot = mel band m+2
+      float melLeft   = melMin +  m      * melStep;
+      float melCenter = melMin + (m + 1) * melStep;
+      float melRight  = melMin + (m + 2) * melStep;
+
+      float hzLeft   = melToHz(melLeft);
+      float hzCenter = melToHz(melCenter);
+      float hzRight  = melToHz(melRight);
+
+      // Record the bin closest to center (for axis labeling)
+      binIndices[m] = freqToBin(hzCenter);
+
+      // Build triangular weights for each FFT bin
+      float weightSum = 0.0f;
+      for (int b = 0; b < nFFT; b++) {
+        float bHz = binFreqs[b];
+
+        if (bHz <= hzLeft || bHz >= hzRight) {
+          weights[m][b] = 0.0f;
+        } else if (bHz <= hzCenter) {
+          // Rising ramp: left → center
+          weights[m][b] = (bHz - hzLeft) / (hzCenter - hzLeft);
+        } else {
+          // Falling ramp: center → right
+          weights[m][b] = (hzRight - bHz) / (hzRight - hzCenter);
+        }
+        weightSum += weights[m][b];
+      }
+
+      // Normalize so each filter has unit area
+      if (weightSum > 0.0f) {
+        for (int b = 0; b < nFFT; b++) {
+          weights[m][b] /= weightSum;
+        }
+      }
+    }
+  }
+
+  /**
+   * Apply the mel filterbank to a linear amplitude spectrum.
+   *
+   * @param linearSpectrum  float[specSize] — single-sided amplitude spectrum per FFT bin
+   * @return                float[nMels] — mel-band energies
+   */
+  public float[] apply(float[] linearSpectrum) {
+    float[] melSpec = new float[nMels];
+
+    for (int m = 0; m < nMels; m++) {
+      float sum = 0.0f;
+      for (int b = 0; b < min(nFFT, linearSpectrum.length); b++) {
+        sum += weights[m][b] * linearSpectrum[b];
+      }
+      melSpec[m] = sum;
+    }
+
+    return melSpec;
+  }
+
+  /**
+   * Convert a frequency in Hz to the nearest FFT bin index.
+   */
+  private int freqToBin(float hz) {
+    return round(hz * 2.0f * (nFFT - 1) / sampleRate);
+  }
+
+  /**
+   * Given a mel band index, return the approximate center frequency in Hz.
+   */
+  public float getMelBandCenterHz(int melBand) {
+    if (melBand < 0 || melBand >= nMels) return 0.0f;
+    float melMin = hzToMel(fMin);
+    float melMax = hzToMel(fMax);
+    float melStep = (melMax - melMin) / (nMels + 1);
+    return melToHz(melMin + (melBand + 1) * melStep);
+  }
+}
 
 
 class PacketRecord {
@@ -18238,8 +18537,10 @@ class SessionSettings {
     int minNumRowsPlaybackFile = PApplet.parseInt(currentBoard.getSampleRate());
     //Spectrogram Widget settings
     int spectMaxFrqSave;
-    int spectSampleRateSave;
-    int spectLogLinSave;
+    int spectFreqScaleSave;   // 0=Linear, 1=Mel
+    int spectColormapSave;    // 0=Inferno, 1=Jet, 2=Viridis, 3=BlueGreen
+    int spectDBRangeSave;     // index 0=-20, 1=-40, 2=-60, 3=-80, 4=-100 dB
+    int spectSmoothingSave;   // index 0=None, 1=Light, 2=Medium, 3=Heavy, 4=Max
 
     //default configuration settings file location and file name variables
     private String sessionPath = "";
@@ -18295,7 +18596,6 @@ class SessionSettings {
 
     //Used to set text in dropdown menus when loading Spectrogram Setings
     String[] spectMaxFrqArray = {"20 Hz", "40 Hz", "60 Hz", "100 Hz", "120 Hz", "250 Hz"};
-    String[] spectSampleRateArray = {"30 Min.", "6 Min.", "3 Min.", "1.5 Min.", "1 Min."};
 
     //Load Accel. dropdown variables
     int loadAccelVertScale;
@@ -18326,8 +18626,10 @@ class SessionSettings {
     List<Integer> loadSpectActiveChanTop = new ArrayList<Integer>();
     List<Integer> loadSpectActiveChanBot = new ArrayList<Integer>();
     int spectMaxFrqLoad;
-    int spectSampleRateLoad;
-    int spectLogLinLoad;
+    int spectFreqScaleLoad;
+    int spectColormapLoad;
+    int spectDBRangeLoad;
+    int spectSmoothingLoad;
 
     //Networking Settings save/load variables
     int nwProtocolLoad;
@@ -18612,8 +18914,10 @@ class SessionSettings {
         saveSpectrogramSettings.setJSONArray("activeChannelsBot", saveActiveChanSpectBot);
         //Save Spectrogram_Max Freq Setting. The max frq variable is updated every time the user selects a dropdown in the spectrogram widget
         saveSpectrogramSettings.setInt("Spectrogram_Max Freq", spectMaxFrqSave);
-        saveSpectrogramSettings.setInt("Spectrogram_Sample Rate", spectSampleRateSave);
-        saveSpectrogramSettings.setInt("Spectrogram_LogLin", spectLogLinSave);
+        saveSpectrogramSettings.setInt("Spectrogram_FreqScale", spectFreqScaleSave);
+        saveSpectrogramSettings.setInt("Spectrogram_Colormap", spectColormapSave);
+        saveSpectrogramSettings.setInt("Spectrogram_dB Range", spectDBRangeSave);
+        saveSpectrogramSettings.setInt("Spectrogram_Smoothing", spectSmoothingSave);
         saveSettingsJSONData.setJSONObject(kJSONKeySpectrogram, saveSpectrogramSettings);
 
         ///////////////////////////////////////////////Setup new JSON object to save EMG Settings
@@ -18805,8 +19109,10 @@ class SessionSettings {
                 loadSpectActiveChanBot.add(loadSpectChanBot.getInt(i));
             }
             spectMaxFrqLoad = loadSpectSettings.getInt("Spectrogram_Max Freq");
-            spectSampleRateLoad = loadSpectSettings.getInt("Spectrogram_Sample Rate");
-            spectLogLinLoad = loadSpectSettings.getInt("Spectrogram_LogLin");
+            spectFreqScaleLoad = loadSpectSettings.getInt("Spectrogram_FreqScale", 0);
+            spectColormapLoad = loadSpectSettings.getInt("Spectrogram_Colormap", 0);
+            spectDBRangeLoad = loadSpectSettings.getInt("Spectrogram_dB Range", 1);
+            spectSmoothingLoad = loadSpectSettings.getInt("Spectrogram_Smoothing", 1);  // default "Light"
             //println(loadSpectActiveChanTop, loadSpectActiveChanBot);
         } catch (Exception e) {
             e.printStackTrace();
@@ -18968,10 +19274,18 @@ class SessionSettings {
         //Apply Max Freq dropdown
         SpectrogramMaxFreq(spectMaxFrqLoad);
             w_spectrogram.cp5_widget.getController("SpectrogramMaxFreq").getCaptionLabel().setText(spectMaxFrqArray[spectMaxFrqLoad]);
-        SpectrogramSampleRate(spectSampleRateLoad);
-            w_spectrogram.cp5_widget.getController("SpectrogramSampleRate").getCaptionLabel().setText(spectSampleRateArray[spectSampleRateLoad]);
-        SpectrogramLogLin(spectLogLinLoad);
-            w_spectrogram.cp5_widget.getController("SpectrogramLogLin").getCaptionLabel().setText(fftLogLinArray[spectLogLinLoad]);
+        SpectrogramFreqScale(spectFreqScaleLoad);
+            String[] freqScaleLabels = {"Linear", "Mel"};
+            w_spectrogram.cp5_widget.getController("SpectrogramFreqScale").getCaptionLabel().setText(freqScaleLabels[spectFreqScaleLoad]);
+        SpectrogramColormap(spectColormapLoad);
+            String[] cmapLabels = {"Inferno", "Jet", "Viridis", "BlueGreen"};
+            w_spectrogram.cp5_widget.getController("SpectrogramColormap").getCaptionLabel().setText(cmapLabels[spectColormapLoad]);
+        SpectrogramDBRange(spectDBRangeLoad);
+            String[] dbRangeLabels = {"0 to -20 dB", "0 to -40 dB", "0 to -60 dB", "0 to -80 dB", "0 to -100 dB"};
+            w_spectrogram.cp5_widget.getController("SpectrogramDBRange").getCaptionLabel().setText(dbRangeLabels[spectDBRangeLoad]);
+        SpectrogramSmoothing(spectSmoothingLoad);
+            String[] smoothLabels = {"None", "Light", "Medium", "Heavy", "Max"};
+            w_spectrogram.cp5_widget.getController("SpectrogramSmoothing").getCaptionLabel().setText(smoothLabels[spectSmoothingLoad]);
         try {
             //apply channel checkbox settings
             w_spectrogram.spectChanSelectTop.deactivateAllButtons();
@@ -29032,8 +29346,12 @@ class W_PulseSensor extends Widget {
 //                                                  //
 //                  W_Spectrogram.pde               //
 //                                                  //
+//    PSD Plot: X = Frequency (Hz), Y = Power (dB)  //
+//    Heatmap-style filled area with vertical color  //
+//    gradient — red (0dB) to blue (-40dB).          //
 //                                                  //
 //    Created by: Richard Waltman, September 2019   //
+//    Enhanced: Mel scale + PSD plot, July 2026     //
 //                                                  //
 //////////////////////////////////////////////////////
 
@@ -29045,56 +29363,60 @@ class W_Spectrogram extends Widget {
     private boolean chanSelectWasOpen = false;
     List<controlP5.Controller> cp5ElementsToCheck = new ArrayList<controlP5.Controller>();
 
-    int xPos = 0;
-    int hueLimit = 160;
-
-    PImage dataImg;
-    int dataImageW = 1800;
-    int dataImageH = 200;
-    int prevW = 0;
-    int prevH = 0;
-    float scaledWidth;
-    float scaledHeight;
+    // PSD Plot Fields
+    int paddingLeft = 54;
+    int paddingRight = 60;   // extra space for color bar on right
+    int paddingTop = 8;
+    int paddingBottom = 50;
     int graphX = 0;
     int graphY = 0;
     int graphW = 0;
     int graphH = 0;
-    int midLineY = 0;
 
-    private int lastShift = 0;
-    private int scrollSpeed = 100; // == 10Hz
-    private boolean wasRunning = false;
+    // Color bar fields
+    int colorBarWidth = 14;
+    int colorBarX = 0;
+    int colorBarGap = 10;
 
-    int paddingLeft = 54;
-    int paddingRight = 26;   
-    int paddingTop = 8;
-    int paddingBottom = 50;
-    int numHorizAxisDivs = 3;
-    int numVertAxisDivs = 8;
     final int[][] vertAxisLabels = {
-        {20, 15, 10, 5, 0, 5, 10, 15, 20},
-        {40, 30, 20, 10, 0, 10, 20, 30, 40},
-        {60, 45, 30, 15, 0, 15, 30, 45, 60},
-        {100, 75, 50, 25, 0, 25,  50, 75, 100},
-        {120, 90, 60, 30, 0, 30, 60, 90, 120},
-        {250, 188, 125, 63, 0, 63, 125, 188, 250}
+        {0, 5, 10, 15, 20},
+        {0, 10, 20, 30, 40},
+        {0, 15, 30, 45, 60},
+        {0, 25, 50, 75, 100},
+        {0, 30, 60, 90, 120},
+        {0, 63, 125, 188, 250}
     };
     int[] vertAxisLabel;
-    final float[][] horizAxisLabels = {
-        {30, 25, 20, 15, 10, 5, 0},
-        {6, 5, 4, 3, 2, 1, 0},
-        {3, 2, 1, 0},
-        {1.5f, 1, .5f, 0},
-        {1, .5f, 0}
-    };
-    float[] horizAxisLabel;
-    StringList horizAxisLabelStrings;
 
-    float[] topFFTAvg;
-    float[] botFFTAvg;
+    // PSD data processing
+    private MelFilterBank melFilterBank;
+    private int nMelBands = 64;
+    private boolean useMelScale = false;
+    private float[][] cachedSpectra;       // [nchan][specSize] — per-channel FFT amplitudes
+    private float[] workBuffer;            // reused float buffer for FFT input
+    private float dBMin = -40.0f;
+    private float dBMax = 0.0f;
+    private int currentDBRange = 1;      // index into dbRangeOptions
+    private final int[] dbRangeOptions = {-20, -40, -60, -80, -100};
+    private int currentSmoothing = 1;    // index into smoothingOptions (1="Medium")
+    private final float[] smoothingOptions = {1.00f, 0.50f, 0.30f, 0.15f, 0.08f};
+
+    // Gradient endpoints: red = high power (0dB), blue = low power (-40dB)
+    private final int highPowerColor = 0xffFF3030;
+    private final int lowPowerColor  = 0xff3080FF;
+
+    // Cached display data
+    private float[] topSpectrum;
+    private float[] botSpectrum;
+    private float[] topPrevDB;     // previous frame's dB values for temporal smoothing
+    private float[] botPrevDB;
+    private float smoothAlpha = 0.30f; // 0=full smoothing, 1=instant
+    private boolean hasPrevFrame = false;
+    private int numDisplayBins;
+    private boolean wasRunning = false;
 
     W_Spectrogram(PApplet _parent){
-        super(_parent); //calls the parent CONSTRUCTOR method of Widget (DON'T REMOVE)
+        super(_parent);
 
         //Add channel select dropdown to this widget
         spectChanSelectTop = new ChannelSelect(pApplet, this, x, y, w, navH, "Spectrogram_Channels_Top");
@@ -29106,62 +29428,55 @@ class W_Spectrogram extends Widget {
         cp5ElementsToCheck.addAll(spectChanSelectTop.getCp5ElementsForOverlapCheck());
         cp5ElementsToCheck.addAll(spectChanSelectBot.getCp5ElementsForOverlapCheck());
 
-        xPos = w - 1; //draw on the right, and shift pixels to the left
-        prevW = w;
-        prevH = h;
-        graphX = x + paddingLeft;
-        graphY = y + paddingTop;
-        graphW = w - paddingRight - paddingLeft;
-        graphH = h - paddingBottom - paddingTop;
+        // Calculate plot area
+        computePlotLayout();
 
+        // Set defaults
         settings.spectMaxFrqSave = 1;
-        settings.spectSampleRateSave = 2;
-        settings.spectLogLinSave = 0;
+        settings.spectFreqScaleSave = 0;
+        settings.spectColormapSave = 0;
+        settings.spectDBRangeSave = currentDBRange;
+        settings.spectSmoothingSave = currentSmoothing;
+        smoothAlpha = smoothingOptions[currentSmoothing];
         vertAxisLabel = vertAxisLabels[settings.spectMaxFrqSave];
-        horizAxisLabel = horizAxisLabels[settings.spectSampleRateSave];
-        horizAxisLabelStrings = new StringList();
-        //Fetch/calculate the time strings for the horizontal axis ticks
-        fetchTimeStrings(numHorizAxisDivs);
 
-        //This is the protocol for setting up dropdowns.
-        //Note that these 3 dropdowns correspond to the 3 global functions below
-        //You just need to make sure the "id" (the 1st String) has the same name as the corresponding function
+        // Set up dropdowns
         addDropdown("SpectrogramMaxFreq", "Max Freq", Arrays.asList(settings.spectMaxFrqArray), settings.spectMaxFrqSave);
-        addDropdown("SpectrogramSampleRate", "Window", Arrays.asList(settings.spectSampleRateArray), settings.spectSampleRateSave);
-        addDropdown("SpectrogramLogLin", "Log/Lin", Arrays.asList(settings.fftLogLinArray), settings.spectLogLinSave);
+        addDropdown("SpectrogramFreqScale", "Freq Scale", Arrays.asList("Linear", "Mel"), settings.spectFreqScaleSave);
+        addDropdown("SpectrogramColormap", "Colormap", Arrays.asList("Inferno", "Jet", "Viridis", "BlueGreen"), settings.spectColormapSave);
+        addDropdown("SpectrogramDBRange", "dB Range", Arrays.asList("0 to -20 dB", "0 to -40 dB", "0 to -60 dB", "0 to -80 dB", "0 to -100 dB"), settings.spectDBRangeSave);
+        addDropdown("SpectrogramSmoothing", "Smoothing", Arrays.asList("None", "Light", "Medium", "Heavy", "Max"), settings.spectSmoothingSave);
 
-        //Resize the height of the data image using default 
-        dataImageH = vertAxisLabel[0] * 2;
-        //Create image using correct dimensions! Fixes bug where image size and labels do not align on session start.
-        dataImg = createImage(dataImageW, dataImageH, RGB);
+        // Determine initial number of display bins
+        numDisplayBins = fftBuff[0].specSize();
+
+        // Build the mel filterbank
+        buildMelFilterBank();
     }
 
     public void update(){
-        super.update(); //calls the parent update() method of Widget (DON'T REMOVE)
+        super.update();
 
-        //Update channel checkboxes and active channels
+        // Update channel checkboxes and active channels
         spectChanSelectTop.update(x, y, w);
         spectChanSelectBot.update(x, y + navH, w);
-        //Let the top channel select open the bottom one also so we can open both with 1 button
+
+        // Sync bottom channel select visibility with top
         if (chanSelectWasOpen != spectChanSelectTop.isVisible()) {
             spectChanSelectBot.setIsVisible(spectChanSelectTop.isVisible());
             chanSelectWasOpen = spectChanSelectTop.isVisible();
-            //Allow spectrogram to flex size and position depending on if the channel select is open
             flexSpectrogramSizeAndPosition();
         }
 
         if (spectChanSelectTop.isVisible()) {
             lockElementsOnOverlapCheck(cp5ElementsToCheck);
         }
-        
+
         if (currentBoard.isStreaming()) {
-            //Make sure we are always draw new pixels on the right
-            xPos = dataImg.width - 1;
-            //Fetch/calculate the time strings for the horizontal axis ticks
-            fetchTimeStrings(numHorizAxisDivs);
+            computeUnsmooothedSpectra();
         }
-        
-        //State change check
+
+        // State change check
         if (currentBoard.isStreaming() && !wasRunning) {
             onStartRunning();
         } else if (!currentBoard.isStreaming() && wasRunning) {
@@ -29171,7 +29486,17 @@ class W_Spectrogram extends Widget {
 
     private void onStartRunning() {
         wasRunning = true;
-        lastShift = millis();
+        hasPrevFrame = false;
+        buildMelFilterBank();
+        int specSize = fftBuff[0].specSize();
+        cachedSpectra = new float[nchan][specSize];
+        workBuffer = new float[getNfftSafe()];
+        // Pre-allocate display arrays
+        numDisplayBins = useMelScale ? nMelBands : specSize;
+        topSpectrum = new float[numDisplayBins];
+        botSpectrum = new float[numDisplayBins];
+        topPrevDB = new float[numDisplayBins];
+        botPrevDB = new float[numDisplayBins];
     }
 
     private void onStopRunning() {
@@ -29179,224 +29504,456 @@ class W_Spectrogram extends Widget {
     }
 
     public void draw(){
-        super.draw(); //calls the parent draw() method of Widget (DON'T REMOVE)
-
-        //put your code here... //remember to refer to x,y,w,h which are the positioning variables of the Widget class
-        
-        //Scale the dataImage to fit in inside the widget
-        float scaleW = PApplet.parseFloat(graphW) / dataImageW;
-        float scaleH = PApplet.parseFloat(graphH) / dataImageH;
+        super.draw();
 
         pushStyle();
-        fill(0);
-        rect(x, y, w, h); //draw a black background for the widget
+        fill(255);
+        rect(x, y, w, h);
         popStyle();
 
-        //draw the spectrogram if the widget is open, and update pixels if board is streaming data
         if (currentBoard.isStreaming()) {
+            // Compute display data for both channel groups
+            computeSpectrumForGroup(spectChanSelectTop, topSpectrum);
+            computeSpectrumForGroup(spectChanSelectBot, botSpectrum);
+
             pushStyle();
-            dataImg.loadPixels();
+            // Draw grid lines
+            drawGridLines();
 
-            //Shift all pixels to the left! (every scrollspeed ms)
-            if(millis() - lastShift > scrollSpeed) {
-                for (int r = 0; r < dataImg.height; r++) {
-                    if (r != 0) {
-                        arrayCopy(dataImg.pixels, dataImg.width * r, dataImg.pixels, dataImg.width * r - 1, dataImg.width);
-                    } else {
-                        //When there would be an ArrayOutOfBoundsException, account for it!
-                        arrayCopy(dataImg.pixels, dataImg.width * (r + 1), dataImg.pixels, r * dataImg.width, dataImg.width);
-                    }
-                }
+            // Draw heatmap-style PSD fill for both channel groups
+            drawHeatmapPSD(topSpectrum);
+            drawHeatmapPSD(botSpectrum);
 
-                lastShift += scrollSpeed;
-            }
-            //for (int i = 0; i < fftLin_L.specSize() - 80; i++) {
-            for (int i = 0; i <= dataImg.height/2; i++) {
-                //LEFT SPECTROGRAM ON TOP
-                float hueValue = hueLimit - map((fftAvgs(spectChanSelectTop.activeChan, i)*32), 0, 256, 0, hueLimit);
-                if (settings.spectLogLinSave == 0) {
-                    hueValue = map(log10(hueValue), 0, 2, 0, hueLimit);
-                }
-                // colorMode is HSB, the range for hue is 256, for saturation is 100, brightness is 100.
-                colorMode(HSB, 256, 100, 100);
-                // color for stroke is specified as hue, saturation, brightness.
-                stroke(PApplet.parseInt(hueValue), 100, 80);
-                // plot a point using the specified stroke
-                //point(xPos, i);
-                int loc = xPos + ((dataImg.height/2 - i) * dataImg.width);
-                if (loc >= dataImg.width * dataImg.height) loc = dataImg.width * dataImg.height - 1;
-                try {
-                    dataImg.pixels[loc] = color(PApplet.parseInt(hueValue), 100, 80);
-                } catch (Exception e) {
-                    println("Major drawing error Spectrogram Left image!");
-                }
+            // Draw color bar on the right
+            drawColorBar();
 
-                //RIGHT SPECTROGRAM ON BOTTOM
-                hueValue = hueLimit - map((fftAvgs(spectChanSelectBot.activeChan, i)*32), 0, 256, 0, hueLimit);
-                if (settings.spectLogLinSave == 0) {
-                    hueValue = map(log10(hueValue), 0, 2, 0, hueLimit);
-                }
-                // colorMode is HSB, the range for hue is 256, for saturation is 100, brightness is 100.
-                colorMode(HSB, 256, 100, 100);
-                // color for stroke is specified as hue, saturation, brightness.
-                stroke(PApplet.parseInt(hueValue), 100, 80);
-                int y_offset = -1;
-                // Pixel = X + ((Y + Height/2) * Width)
-                loc = xPos + ((i + dataImg.height/2 + y_offset) * dataImg.width);
-                if (loc >= dataImg.width * dataImg.height) loc = dataImg.width * dataImg.height - 1;
-                try {
-                    dataImg.pixels[loc] = color(PApplet.parseInt(hueValue), 100, 80);
-                } catch (Exception e) {
-                    println("Major drawing error Spectrogram Right image!");
-                }
-            }
-            dataImg.updatePixels();
+            // Draw legend for channel groups
+            drawLegend();
             popStyle();
+
+            hasPrevFrame = true;
         }
-        
-        pushMatrix();
-        translate(graphX, graphY);
-        scale(scaleW, scaleH);
-        image(dataImg, 0, 0);
-        popMatrix();
 
         spectChanSelectTop.draw();
         spectChanSelectBot.draw();
-        drawAxes(scaleW, scaleH);
-        drawCenterLine();
+        drawAxes();
     }
 
     public void screenResized(){
-        super.screenResized(); //calls the parent screenResized() method of Widget (DON'T REMOVE)
+        super.screenResized();
 
         spectChanSelectTop.screenResized(pApplet);
-        spectChanSelectBot.screenResized(pApplet);  
-        graphX = x + paddingLeft;
-        graphY = y + paddingTop;
-        graphW = w - paddingRight - paddingLeft;
-        graphH = h - paddingBottom - paddingTop;
-        //Allow spectrogram to flex size and position depending on if the channel select is open
+        spectChanSelectBot.screenResized(pApplet);
+        computePlotLayout();
         if (spectChanSelectTop.isVisible()) {
             graphY += navH * 2;
             graphH -= navH * 2;
+            computePlotLayout();
         }
     }
 
     public void mousePressed(){
-        super.mousePressed(); //calls the parent mousePressed() method of Widget (DON'T REMOVE)
-
-        spectChanSelectTop.mousePressed(this.dropdownIsActive); //Calls channel select mousePressed and checks if clicked
+        super.mousePressed();
+        spectChanSelectTop.mousePressed(this.dropdownIsActive);
         spectChanSelectBot.mousePressed(this.dropdownIsActive);
     }
 
     public void mouseReleased(){
-        super.mouseReleased(); //calls the parent mouseReleased() method of Widget (DON'T REMOVE)
-
+        super.mouseReleased();
     }
 
-    public void drawAxes(float scaledW, float scaledH) {
-        
+    // ============ AXES ============
+
+    public void drawAxes() {
+        // X-axis label
         pushStyle();
-            fill(255);
+            fill(0);
             textSize(14);
-            //draw horizontal axis label
-            text("Time", x + w/2 - textWidth("Time")/3, y + h - 9);
-            noFill();
-            stroke(255);
-            strokeWeight(2);
-            //draw rectangle around the spectrogram
-            rect(graphX, graphY, scaledW * dataImageW, scaledH * dataImageH);
+            text("Frequency (Hz)", graphX + graphW/2 - textWidth("Frequency (Hz)")/3, y + h - 9);
         popStyle();
 
+        // Plot border
         pushStyle();
-            //draw horizontal axis ticks from left to right
-            int tickMarkSize = 7; //in pixels
-            float horizAxisX = graphX;
-            float horizAxisY = graphY + scaledH * dataImageH;
-            stroke(255);
-            fill(255);
+            noFill();
+            stroke(0);
+            strokeWeight(2);
+            rect(graphX, graphY, graphW, graphH);
+        popStyle();
+
+        // X-axis ticks (frequency)
+        pushStyle();
+            int tickMarkSize = 7;
+            float axisY = graphY + graphH;
+            stroke(0);
+            fill(0);
             strokeWeight(2);
             textSize(11);
-            for (int i = 0; i <= numHorizAxisDivs; i++) {
-                float offset = scaledW * dataImageW * (PApplet.parseFloat(i) / numHorizAxisDivs);
-                line(horizAxisX + offset, horizAxisY, horizAxisX + offset, horizAxisY + tickMarkSize);
-                if (horizAxisLabelStrings.get(i) != null) {
-                    text(horizAxisLabelStrings.get(i), horizAxisX + offset - (int)textWidth(horizAxisLabelStrings.get(i))/2, horizAxisY + tickMarkSize * 3);
+
+            int numXTicks = 5;
+            for (int i = 0; i < numXTicks; i++) {
+                float frac = (float)i / (numXTicks - 1);
+                float tx = graphX + frac * graphW;
+                line(tx, axisY, tx, axisY + tickMarkSize);
+
+                String label;
+                if (useMelScale && melFilterBank != null) {
+                    int melIdx = round(frac * (nMelBands - 1));
+                    float hz = melFilterBank.getMelBandCenterHz(melIdx);
+                    label = nf(hz, 0, 1);
+                } else {
+                    int labelIdx = round(frac * (vertAxisLabel.length - 1));
+                    label = Integer.toString(vertAxisLabel[labelIdx]);
                 }
+                text(label, tx - textWidth(label)/2, axisY + tickMarkSize * 3);
             }
         popStyle();
-        
+
+        // Y-axis label (rotated)
         pushStyle();
             pushMatrix();
+                translate(18, graphY + graphH/2 + textWidth("Power (dB)")/2);
                 rotate(radians(-90));
-                translate(-h/2 - textWidth("Frequency (Hz)")/3, 20);
-                fill(255);
+                fill(0);
                 textSize(14);
-                //draw y axis label
-                text("Frequency (Hz)", -y, x);
+                text("Power (dB)", 0, 0);
             popMatrix();
         popStyle();
 
+        // Y-axis ticks (dB)
         pushStyle();
-            //draw vertical axis ticks from top to bottom
-            float vertAxisX = graphX;
-            float vertAxisY = graphY;
-            stroke(255);
-            fill(255);
+            tickMarkSize = 7;
+            float axisX = graphX;
+            stroke(0);
+            fill(0);
             textSize(12);
             strokeWeight(2);
-            for (int i = 0; i <= numVertAxisDivs; i++) {
-                float offset = scaledH * dataImageH * (PApplet.parseFloat(i) / numVertAxisDivs);
-                //if (i <= numVertAxisDivs/2) offset -= 2;
-                line(vertAxisX, vertAxisY + offset, vertAxisX - tickMarkSize, vertAxisY + offset);
-                if (vertAxisLabel[i] == 0) midLineY = PApplet.parseInt(vertAxisY + offset);
-                offset += paddingTop/2;
-                text(vertAxisLabel[i], vertAxisX - tickMarkSize*2 - textWidth(Integer.toString(vertAxisLabel[i])), vertAxisY + offset);
+            float[] dbTicks = {0, -10, -20, -30, -40};
+            for (int i = 0; i < dbTicks.length; i++) {
+                float frac = (dbTicks[i] - dBMin) / (dBMax - dBMin);
+                float ty = graphY + (1.0f - frac) * graphH;
+                line(axisX, ty, axisX - tickMarkSize, ty);
+                String label = Integer.toString((int)dbTicks[i]);
+                text(label, axisX - tickMarkSize*2 - textWidth(label), ty + 4);
             }
         popStyle();
 
-        drawColorScaleReference();
-    }
-
-    public void drawCenterLine() {
-        //draw a thick line down the middle to separate the two plots
+        // Formula annotation (top-right of plot area)
         pushStyle();
-        stroke(255);
-        strokeWeight(3);
-        line(graphX, midLineY, graphX + graphW, midLineY);
+            fill(0);
+            textSize(12);
+            textAlign(RIGHT, TOP);
+            text("dB = 10 * log10(P / Pmax)", graphX + graphW - 6, graphY + 4);
         popStyle();
     }
 
-    public void drawColorScaleReference() {
-        int colorScaleHeight = 128;
-        //Dynamically scale the Log/Lin amplitude-to-color reference line. If it won't fit, don't draw it.
-        if (graphH < colorScaleHeight) {
-            colorScaleHeight = PApplet.parseInt(h * 1/2);
-            if (colorScaleHeight > graphH) {
-                return;
+    // ============ GRID, CURVE & COLOR BAR ============
+
+    private void drawGridLines() {
+        float[] dbTicks = {0, -10, -20, -30, -40};
+
+        // Horizontal dashed grid lines at dB ticks
+        for (int i = 0; i < dbTicks.length; i++) {
+            float frac = (dbTicks[i] - dBMin) / (dBMax - dBMin);
+            float gy = graphY + (1.0f - frac) * graphH;
+            drawDashedLine(graphX, gy, graphX + graphW, gy, color(200), 8, 4);
+        }
+
+        // Vertical dashed grid lines at frequency tick positions
+        int numXTicks = 5;
+        for (int i = 0; i < numXTicks; i++) {
+            float frac = (float)i / (numXTicks - 1);
+            float gx = graphX + frac * graphW;
+            drawDashedLine(gx, graphY, gx, graphY + graphH, color(200), 8, 4);
+        }
+    }
+
+    /**
+     * Draw PSD as a heatmap-style filled area: for each frequency bin,
+     * the area from baseline (-40dB) up to the data value is filled with
+     * a vertical color gradient — red at the top (0dB, high power),
+     * blue at the bottom (-40dB, low power).
+     *
+     * Uses filled rectangles for clean, crisp horizontal color bands.
+     */
+    private void drawHeatmapPSD(float[] data) {
+        if (data == null || data.length < 2) return;
+
+        int n = min(data.length, numDisplayBins);
+        float baselineY = graphY + graphH;
+
+        int bands = 160;  // fine bands for smooth gradient
+        float bandH = graphH / (float)bands;
+
+        noStroke();
+        for (int band = 0; band < bands; band++) {
+            float bandTop = graphY + band * bandH;
+            float bandMidY = graphY + (band + 0.5f) * bandH;
+            // band 0 = top (red, near 0dB), band N-1 = bottom (blue, near -40dB)
+            float frac = (float)band / (float)(bands - 1);
+            int bandColor = lerpColor(lowPowerColor, highPowerColor, 1.0f - frac);
+            fill(bandColor);
+
+            // Draw filled rectangular segments across freq bins above this band
+            boolean drawing = false;
+            float segStart = 0;
+            for (int i = 0; i < n; i++) {
+                float px = graphX + (float)i / (numDisplayBins - 1) * graphW;
+                float dataY = graphY + (1.0f - data[i]) * graphH;
+                dataY = constrain(dataY, graphY, baselineY);
+                boolean above = (dataY <= bandMidY);
+
+                if (above && !drawing) {
+                    segStart = px;
+                    drawing = true;
+                } else if (!above && drawing) {
+                    rect(segStart, bandTop, px - segStart, bandH);
+                    drawing = false;
+                }
+            }
+            if (drawing) {
+                float lastX = graphX + (float)(n - 1) / (numDisplayBins - 1) * graphW;
+                rect(segStart, bandTop, lastX - segStart, bandH);
             }
         }
+
+        // Subtle outline curve on top of the heatmap fill
+        noFill();
+        stroke(0, 80);
+        strokeWeight(1.2f);
+        beginShape(LINE_STRIP);
+        for (int i = 0; i < n; i++) {
+            float px = graphX + (float)i / (numDisplayBins - 1) * graphW;
+            float py = graphY + (1.0f - data[i]) * graphH;
+            py = constrain(py, graphY, baselineY);
+            vertex(px, py);
+        }
+        endShape();
+    }
+
+    /**
+     * Draw vertical color bar on the right: red (top, 0dB) → blue (bottom, -40dB).
+     */
+    private void drawColorBar() {
+        int barH = graphH;
+        int segments = 128;  // number of gradient steps
+
         pushStyle();
-            //draw color scale reference to the right of the spectrogram
-            for (int i = 0; i < colorScaleHeight; i++) {
-                float hueValue = hueLimit - map(i * 2, 0, colorScaleHeight*2, 0, hueLimit);
-                if (settings.spectLogLinSave == 0) {
-                    hueValue = map(log(hueValue) / log(10), 0, 2, 0, hueLimit);
-                }
-                //println(hueValue);
-                // colorMode is HSB, the range for hue is 256, for saturation is 100, brightness is 100.
-                colorMode(HSB, 256, 100, 100);
-                // color for stroke is specified as hue, saturation, brightness.
-                stroke(ceil(hueValue), 100, 80);
-                strokeWeight(10);
-                point(x + w - paddingRight/2 + 1, midLineY + colorScaleHeight/2 - i);
-            }
+        noStroke();
+        for (int i = 0; i < segments; i++) {
+            float frac = (float)i / (segments - 1);  // 0=top(0dB,red), 1=bottom(-40dB,blue)
+            int c = lerpColor(lowPowerColor, highPowerColor, 1.0f - frac);  // frac=0→red, frac=1→blue
+            fill(c);
+            float y0 = graphY + frac * barH;
+            float segH = (barH / (float)segments) + 1;  // +1 to avoid gaps
+            rect(colorBarX, y0, colorBarWidth, segH);
+        }
+
+        // Color bar border
+        noFill();
+        stroke(0);
+        strokeWeight(1);
+        rect(colorBarX, graphY, colorBarWidth, barH);
+
+        // dB labels next to color bar
+        fill(0);
+        textSize(11);
+        textAlign(LEFT, CENTER);
+        float[] dbTicks = {0, -10, -20, -30, -40};
+        for (int i = 0; i < dbTicks.length; i++) {
+            float frac = (dbTicks[i] - dBMin) / (dBMax - dBMin);
+            float ly = graphY + (1.0f - frac) * graphH;
+            // Tick mark
+            stroke(0);
+            strokeWeight(1);
+            line(colorBarX + colorBarWidth, ly, colorBarX + colorBarWidth + 5, ly);
+            // Label
+            noStroke();
+            String label = Integer.toString((int)dbTicks[i]);
+            text(label, colorBarX + colorBarWidth + 7, ly);
+        }
         popStyle();
     }
+
+    private void drawLegend() {
+        int legendX = graphX + 6;
+        int legendY = graphY + 6;
+        int swatchW = 20, swatchH = 3;
+
+        pushStyle();
+        textSize(11);
+        textAlign(LEFT, CENTER);
+
+        // Top group
+        stroke(0xffFF3030);
+        strokeWeight(3);
+        line(legendX, legendY, legendX + swatchW, legendY);
+        fill(0);
+        noStroke();
+        text("Ch Top", legendX + swatchW + 4, legendY);
+
+        // Bottom group
+        stroke(0xff3080FF);
+        strokeWeight(3);
+        line(legendX, legendY + 14, legendX + swatchW, legendY + 14);
+        fill(0);
+        text("Ch Bot", legendX + swatchW + 4, legendY + 14);
+
+        popStyle();
+    }
+
+    // ============ DASHED LINE HELPER ============
+
+    private void drawDashedLine(float x1, float y1, float x2, float y2, int c, float dashLen, float gapLen) {
+        stroke(c);
+        strokeWeight(1);
+        float dx = x2 - x1;
+        float dy = y2 - y1;
+        float len = sqrt(dx*dx + dy*dy);
+        if (len < 1) return;
+        float ux = dx / len;
+        float uy = dy / len;
+        boolean drawing = true;
+        float pos = 0;
+        while (pos < len) {
+            float segLen = drawing ? dashLen : gapLen;
+            if (pos + segLen > len) segLen = len - pos;
+            if (drawing) {
+                line(x1 + ux*pos, y1 + uy*pos, x1 + ux*(pos+segLen), y1 + uy*(pos+segLen));
+            }
+            pos += segLen;
+            drawing = !drawing;
+        }
+    }
+
+    // ============ SPECTRUM COMPUTATION ============
+
+    private void computeUnsmooothedSpectra() {
+        int nfft = getNfftSafe();
+        if (workBuffer == null || workBuffer.length != nfft) {
+            workBuffer = new float[nfft];
+        }
+
+        java.util.Set<Integer> allActiveChans = new java.util.HashSet<Integer>();
+        for (int i : spectChanSelectTop.activeChan) allActiveChans.add(i);
+        for (int i : spectChanSelectBot.activeChan) allActiveChans.add(i);
+
+        for (int chan : allActiveChans) {
+            float[] chanData = dataProcessingFilteredBuffer[chan];
+            int dataLen = chanData.length;
+            for (int j = 0; j < nfft; j++) {
+                workBuffer[j] = chanData[dataLen - nfft + j];
+            }
+            // Remove DC mean
+            float mean = 0.0f;
+            for (int j = 0; j < nfft; j++) mean += workBuffer[j];
+            mean /= nfft;
+            for (int j = 0; j < nfft; j++) workBuffer[j] -= mean;
+
+            // Apply Hanning window to reduce spectral leakage
+            for (int j = 0; j < nfft; j++) {
+                workBuffer[j] *= 0.5f * (1.0f - cos(TWO_PI * j / (nfft - 1)));
+            }
+
+            fftBuffSpectrogram[chan].forward(workBuffer);
+
+            int specSize = fftBuffSpectrogram[chan].specSize();
+            if (cachedSpectra == null || cachedSpectra.length <= chan || cachedSpectra[chan].length != specSize) {
+                if (cachedSpectra == null) cachedSpectra = new float[nchan][specSize];
+                else cachedSpectra[chan] = new float[specSize];
+            }
+            for (int b = 0; b < specSize; b++) {
+                float amp = fftBuffSpectrogram[chan].getBand(b) / nfft;
+                if (b > 0 && b < specSize - 1) amp *= 2.0f;
+                cachedSpectra[chan][b] = amp;
+            }
+        }
+    }
+
+    /**
+     * Compute full-resolution dB-normalized spectrum for a channel group.
+     * Averages across active channels, applies mel filterbank (if enabled),
+     * converts to dB, and normalizes to [0, 1].
+     */
+    private void computeSpectrumForGroup(ChannelSelect sel, float[] dest) {
+        if (dest == null) return;
+        // Zero out destination
+        for (int i = 0; i < dest.length; i++) dest[i] = 0.0f;
+
+        if (sel.activeChan.size() == 0) return;
+
+        int specSize = fftBuff[0].specSize();
+
+        // Average amplitude spectrum across active channels
+        float[] avgAmp = new float[specSize];
+        for (int chan : sel.activeChan) {
+            if (cachedSpectra == null || cachedSpectra.length <= chan) continue;
+            for (int b = 0; b < specSize; b++) {
+                avgAmp[b] += cachedSpectra[chan][b];
+            }
+        }
+        for (int b = 0; b < specSize; b++) {
+            avgAmp[b] /= sel.activeChan.size();
+        }
+
+        // Apply mel filterbank if enabled
+        float[] displayData;
+        int displayLen;
+        if (useMelScale && melFilterBank != null) {
+            displayData = melFilterBank.apply(avgAmp);
+            displayLen = min(nMelBands, dest.length);
+        } else {
+            displayData = avgAmp;
+            displayLen = min(specSize, dest.length);
+        }
+
+        // Convert to dB and normalize
+        float maxAmp = 1e-10f;
+        for (int i = 0; i < displayLen; i++) {
+            if (displayData[i] > maxAmp) maxAmp = displayData[i];
+        }
+        for (int i = 0; i < displayLen; i++) {
+            float val = max(displayData[i], 1e-10f);
+            float dbVal = 10.0f * (float)Math.log10(val) - 10.0f * (float)Math.log10(maxAmp);
+            float normalized = constrain((dbVal - dBMin) / (dBMax - dBMin), 0.0f, 1.0f);
+
+            // Temporal exponential smoothing (simulates Welch averaging)
+            float[] prevBuf = (sel == spectChanSelectTop) ? topPrevDB : botPrevDB;
+            if (prevBuf != null && i < prevBuf.length) {
+                if (hasPrevFrame) {
+                    normalized = smoothAlpha * normalized + (1.0f - smoothAlpha) * prevBuf[i];
+                }
+                prevBuf[i] = normalized;
+            }
+            dest[i] = normalized;
+        }
+    }
+
+    private void buildMelFilterBank() {
+        try {
+            int nfft = getNfftSafe();
+            float sr = currentBoard.getSampleRate();
+            if (sr <= 0) return;
+            float fMax = vertAxisLabel[vertAxisLabel.length - 1];
+            int specSize = nfft / 2 + 1;
+            melFilterBank = new MelFilterBank(specSize, nMelBands, sr, 0.5f, fMax);
+            if (useMelScale) {
+                numDisplayBins = nMelBands;
+            } else {
+                numDisplayBins = specSize;
+            }
+            // Reallocate display arrays
+            topSpectrum = new float[numDisplayBins];
+            botSpectrum = new float[numDisplayBins];
+        } catch (Exception e) {
+            // Silently handle
+        }
+    }
+
+    // ============ CHANNEL & LAYOUT HELPERS ============
 
     public void activateDefaultChannels() {
         int[] topChansToActivate;
-        int[] botChansToActivate; 
+        int[] botChansToActivate;
         if (nchan == 4) {
             topChansToActivate = new int[]{0, 2};
             botChansToActivate = new int[]{1, 3};
@@ -29404,18 +29961,24 @@ class W_Spectrogram extends Widget {
             topChansToActivate = new int[]{0, 2, 4, 6};
             botChansToActivate = new int[]{1, 3, 5, 7};
         } else {
-            topChansToActivate = new int[]{0, 2, 4, 6, 8 ,10, 12, 14};
+            topChansToActivate = new int[]{0, 2, 4, 6, 8, 10, 12, 14};
             botChansToActivate = new int[]{1, 3, 5, 7, 9, 11, 13, 15};
         }
 
         for (int i = 0; i < topChansToActivate.length; i++) {
             spectChanSelectTop.setToggleState(topChansToActivate[i], true);
-            
         }
-
         for (int i = 0; i < botChansToActivate.length; i++) {
             spectChanSelectBot.setToggleState(botChansToActivate[i], true);
         }
+    }
+
+    public void computePlotLayout() {
+        graphX = x + paddingLeft;
+        graphY = y + paddingTop;
+        graphW = w - paddingRight - paddingLeft;
+        graphH = h - paddingBottom - paddingTop;
+        colorBarX = graphX + graphW + colorBarGap;
     }
 
     public void flexSpectrogramSizeAndPosition() {
@@ -29427,88 +29990,39 @@ class W_Spectrogram extends Widget {
             graphH += navH * 2;
         }
     }
-
-    public void setScrollSpeed(int i) {
-        scrollSpeed = i;
-    }
-
-    public float fftAvgs(List<Integer> _activeChan, int freqBand) {
-        float sum = 0f;
-        for (int i = 0; i < _activeChan.size(); i++) {
-            sum += fftBuff[_activeChan.get(i)].getBand(freqBand);
-        }
-        return sum / _activeChan.size();
-    }
-
-    public void fetchTimeStrings(int numAxisTicks) {
-        horizAxisLabelStrings.clear();
-        LocalDateTime time;
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HH:mm:ss");
-
-        if (getCurrentTimeStamp() == 0) {
-            time = LocalDateTime.now();
-        } else {
-            time = LocalDateTime.ofInstant(Instant.ofEpochMilli(getCurrentTimeStamp()), 
-                                            TimeZone.getDefault().toZoneId()); 
-        }
-        
-        for (int i = 0; i <= numAxisTicks; i++) {
-            long l = (long)(horizAxisLabel[i] * 60f);
-            LocalDateTime t = time.minus(l, ChronoUnit.SECONDS);
-            horizAxisLabelStrings.append(t.format(formatter));
-        }
-    }
-
-    //Identical to the method in TimeSeries, but allows spectrogram to get the data directly from the playback data in the background
-    //Find times to display for playback position
-    private long getCurrentTimeStamp() {
-        //return current playback time
-        List<double[]> currentData = currentBoard.getData(1);
-        int timeStampChan = currentBoard.getTimestampChannel();
-        long timestampMS = (long)(currentData.get(0)[timeStampChan] * 1000.0f);
-        return timestampMS;
-    }
 };
 
-//These functions need to be global! These functions are activated when an item from the corresponding dropdown is selected
-//triggered when there is an event in the Spectrogram Widget MaxFreq. Dropdown
+// ============ GLOBAL DROPDOWN CALLBACKS ============
+
 public void SpectrogramMaxFreq(int n) {
     settings.spectMaxFrqSave = n;
-    //reset the vertical axis labels
     w_spectrogram.vertAxisLabel = w_spectrogram.vertAxisLabels[n];
-    //Resize the height of the data image
-    w_spectrogram.dataImageH = w_spectrogram.vertAxisLabel[0] * 2;
-    //overwrite the existing image because the sample rate is about to change
-    w_spectrogram.dataImg = createImage(w_spectrogram.dataImageW, w_spectrogram.dataImageH, RGB);
+    w_spectrogram.buildMelFilterBank();
 }
 
-public void SpectrogramSampleRate(int n) {
-    settings.spectSampleRateSave = n;
-    //overwrite the existing image because the sample rate is about to change
-    w_spectrogram.dataImg = createImage(w_spectrogram.dataImageW, w_spectrogram.dataImageH, RGB);
-    w_spectrogram.horizAxisLabel = w_spectrogram.horizAxisLabels[n];
-    if (n == 0) {
-        w_spectrogram.numHorizAxisDivs = 6;
-        w_spectrogram.setScrollSpeed(1000);
-    } else if (n == 1) {
-        w_spectrogram.numHorizAxisDivs = 6;
-        w_spectrogram.setScrollSpeed(200);
-    } else if (n == 2) {
-        w_spectrogram.numHorizAxisDivs = 3;
-        w_spectrogram.setScrollSpeed(100);
-    } else if (n == 3) {
-        w_spectrogram.numHorizAxisDivs = 3;
-        w_spectrogram.setScrollSpeed(50);
-    } else if (n == 4) {
-        w_spectrogram.numHorizAxisDivs = 2;
-        w_spectrogram.setScrollSpeed(25);
-    }
-    w_spectrogram.horizAxisLabelStrings.clear();
-    w_spectrogram.fetchTimeStrings(w_spectrogram.numHorizAxisDivs);
+public void SpectrogramFreqScale(int n) {
+    settings.spectFreqScaleSave = n;
+    w_spectrogram.useMelScale = (n == 1);
+    w_spectrogram.buildMelFilterBank();
 }
 
-public void SpectrogramLogLin(int n) {
-    settings.spectLogLinSave = n;
+public void SpectrogramColormap(int n) {
+    settings.spectColormapSave = n;
+    // Colormap dropdown no longer used for theme selection;
+    // color is now fixed red→blue gradient by power level.
+    // Keeping callback to avoid breaking settings persistence.
+}
+
+public void SpectrogramDBRange(int n) {
+    settings.spectDBRangeSave = n;
+    w_spectrogram.currentDBRange = n;
+    w_spectrogram.dBMin = w_spectrogram.dbRangeOptions[n];
+}
+
+public void SpectrogramSmoothing(int n) {
+    settings.spectSmoothingSave = n;
+    w_spectrogram.currentSmoothing = n;
+    w_spectrogram.smoothAlpha = w_spectrogram.smoothingOptions[n];
 }
 
 ////////////////////////////////////////////////////
