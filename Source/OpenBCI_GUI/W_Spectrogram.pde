@@ -52,7 +52,7 @@ class W_Spectrogram extends Widget {
 
     // Curve colors per theme {top, bot}
     private final color[][] themeColors = {
-        {#F47D16, #651B6E},  // Inferno: orange + purple
+        {#FF3030, #3080FF},  // Inferno: red + blue
         {#00BFFF, #FF4500},  // Jet: cyan + red-orange
         {#5EC962, #3B528B},  // Viridis: green + blue
         {#00C060, #004080}   // BlueGreen: green + navy
