@@ -156,7 +156,7 @@ class W_Spectrogram extends Widget {
         super.draw();
 
         pushStyle();
-        fill(0);
+        fill(255);
         rect(x, y, w, h);
         popStyle();
 
@@ -214,12 +214,12 @@ class W_Spectrogram extends Widget {
 
     void drawAxes() {
         pushStyle();
-            fill(255);
+            fill(0);
             textSize(14);
             // X-axis label
             text("Frequency (Hz)", x + w/2 - textWidth("Frequency (Hz)")/3, y + h - 9);
             noFill();
-            stroke(255);
+            stroke(0);
             strokeWeight(2);
             rect(graphX, graphY, graphW, graphH);
         popStyle();
@@ -228,8 +228,8 @@ class W_Spectrogram extends Widget {
         pushStyle();
             int tickMarkSize = 7;
             float axisY = graphY + graphH;
-            stroke(255);
-            fill(255);
+            stroke(0);
+            fill(0);
             strokeWeight(2);
             textSize(11);
 
@@ -258,7 +258,7 @@ class W_Spectrogram extends Widget {
             pushMatrix();
                 rotate(radians(-90));
                 translate(-h/2 - textWidth("Power (dB)")/3, 20);
-                fill(255);
+                fill(0);
                 textSize(14);
                 text("Power (dB)", -y, x);
             popMatrix();
@@ -267,8 +267,8 @@ class W_Spectrogram extends Widget {
         // Y-axis ticks (dB)
         pushStyle();
             float axisX = graphX;
-            stroke(255);
-            fill(255);
+            stroke(0);
+            fill(0);
             textSize(12);
             strokeWeight(2);
             float[] dbTicks = {0, -10, -20, -30, -40};
@@ -285,7 +285,7 @@ class W_Spectrogram extends Widget {
     // ============ GRID & CURVE DRAWING ============
 
     private void drawGridLines() {
-        stroke(80, 80, 80);
+        stroke(200, 200, 200);
         strokeWeight(1);
         float[] dbTicks = {0, -10, -20, -30, -40};
         for (int i = 0; i < dbTicks.length; i++) {
@@ -345,13 +345,13 @@ class W_Spectrogram extends Widget {
         fill(topColor);
         noStroke();
         rect(legendX, legendY, swatchSize, swatchSize);
-        fill(255);
+        fill(0);
         text("Ch Top", legendX + swatchSize + 5, legendY + swatchSize/2);
 
         // Bottom group
         fill(botColor);
         rect(legendX, legendY + swatchSize + 6, swatchSize, swatchSize);
-        fill(255);
+        fill(0);
         text("Ch Bot", legendX + swatchSize + 5, legendY + swatchSize + 6 + swatchSize/2);
 
         popStyle();
