@@ -260,7 +260,7 @@ class W_Spectrogram extends Widget {
 
         // Y-axis ticks (dB)
         pushStyle();
-            int tickMarkSize = 7;
+            tickMarkSize = 7;
             float axisX = graphX;
             stroke(0);
             fill(0);
