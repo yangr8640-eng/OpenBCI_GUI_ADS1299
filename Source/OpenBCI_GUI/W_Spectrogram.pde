@@ -29,6 +29,10 @@ class W_Spectrogram extends Widget {
     int graphY = 0;
     int graphW = 0;
     int graphH = 0;
+    int plotGap = 20;        // horizontal gap between left/right subplots
+    int halfW = 0;           // width of each subplot
+    int leftPlotX = 0;       // X origin of left subplot (Ch Top)
+    int rightPlotX = 0;      // X origin of right subplot (Ch Bot)
 
     final int[][] vertAxisLabels = {
         {0, 5, 10, 15, 20},
@@ -79,10 +83,7 @@ class W_Spectrogram extends Widget {
         cp5ElementsToCheck.addAll(spectChanSelectBot.getCp5ElementsForOverlapCheck());
 
         // Calculate plot area
-        graphX = x + paddingLeft;
-        graphY = y + paddingTop;
-        graphW = w - paddingRight - paddingLeft;
-        graphH = h - paddingBottom - paddingTop;
+        computePlotLayout();
 
         // Set defaults
         settings.spectMaxFrqSave = 1;
@@ -166,17 +167,17 @@ class W_Spectrogram extends Widget {
             computeSpectrumForGroup(spectChanSelectBot, botSpectrum);
 
             pushStyle();
-            // Draw grid lines
+            // Draw grid lines for both subplots
             drawGridLines();
 
             // Draw filled area curves
             color topFill = color(red(topColor), green(topColor), blue(topColor), 80);
             color botFill = color(red(botColor), green(botColor), blue(botColor), 80);
-            drawFilledCurve(topSpectrum, topFill, topColor);
-            drawFilledCurve(botSpectrum, botFill, botColor);
+            drawFilledCurve(topSpectrum, topFill, topColor, leftPlotX);
+            drawFilledCurve(botSpectrum, botFill, botColor, rightPlotX);
 
-            // Draw legend
-            drawLegend();
+            // Draw subplot titles
+            drawSubplotTitles();
             popStyle();
         }
 
@@ -190,13 +191,11 @@ class W_Spectrogram extends Widget {
 
         spectChanSelectTop.screenResized(pApplet);
         spectChanSelectBot.screenResized(pApplet);
-        graphX = x + paddingLeft;
-        graphY = y + paddingTop;
-        graphW = w - paddingRight - paddingLeft;
-        graphH = h - paddingBottom - paddingTop;
+        computePlotLayout();
         if (spectChanSelectTop.isVisible()) {
             graphY += navH * 2;
             graphH -= navH * 2;
+            computePlotLayout();
         }
     }
 
@@ -214,46 +213,17 @@ class W_Spectrogram extends Widget {
 
     void drawAxes() {
         pushStyle();
+            // Shared X-axis label centered below both subplots
             fill(0);
             textSize(14);
-            // X-axis label
             text("Frequency (Hz)", x + w/2 - textWidth("Frequency (Hz)")/3, y + h - 9);
-            noFill();
-            stroke(0);
-            strokeWeight(2);
-            rect(graphX, graphY, graphW, graphH);
         popStyle();
 
-        // X-axis ticks (frequency)
-        pushStyle();
-            int tickMarkSize = 7;
-            float axisY = graphY + graphH;
-            stroke(0);
-            fill(0);
-            strokeWeight(2);
-            textSize(11);
+        // Draw borders and X-axis for each subplot
+        drawSubplotAxes(leftPlotX, halfW);
+        drawSubplotAxes(rightPlotX, halfW);
 
-            int numXTicks = 5;  // 0, 25%, 50%, 75%, 100% of range
-            for (int i = 0; i < numXTicks; i++) {
-                float frac = (float)i / (numXTicks - 1);
-                float tx = graphX + frac * graphW;
-                line(tx, axisY, tx, axisY + tickMarkSize);
-
-                String label;
-                if (useMelScale && melFilterBank != null) {
-                    int melIdx = round(frac * (nMelBands - 1));
-                    float hz = melFilterBank.getMelBandCenterHz(melIdx);
-                    label = nf(hz, 0, 1);
-                } else {
-                    // Use vertAxisLabel for evenly spaced labels
-                    int labelIdx = round(frac * (vertAxisLabel.length - 1));
-                    label = Integer.toString(vertAxisLabel[labelIdx]);
-                }
-                text(label, tx - textWidth(label)/2, axisY + tickMarkSize * 3);
-            }
-        popStyle();
-
-        // Y-axis label (rotated)
+        // Y-axis label (rotated) — shared, placed on the left
         pushStyle();
             pushMatrix();
                 rotate(radians(-90));
@@ -264,16 +234,17 @@ class W_Spectrogram extends Widget {
             popMatrix();
         popStyle();
 
-        // Y-axis ticks (dB)
+        // Y-axis ticks (dB) — shared, on the far left
         pushStyle();
-            float axisX = graphX;
+            int tickMarkSize = 7;
+            float axisX = leftPlotX;
             stroke(0);
             fill(0);
             textSize(12);
             strokeWeight(2);
             float[] dbTicks = {0, -10, -20, -30, -40};
             for (int i = 0; i < dbTicks.length; i++) {
-                float frac = (dbTicks[i] - dBMin) / (dBMax - dBMin); // 0dB→1.0, -40dB→0.0
+                float frac = (dbTicks[i] - dBMin) / (dBMax - dBMin);
                 float ty = graphY + (1.0f - frac) * graphH;
                 line(axisX, ty, axisX - tickMarkSize, ty);
                 String label = Integer.toString((int)dbTicks[i]);
@@ -282,23 +253,70 @@ class W_Spectrogram extends Widget {
         popStyle();
     }
 
+    /**
+     * Draw border and X-axis ticks for a single subplot at the given x-origin.
+     */
+    private void drawSubplotAxes(int plotX, int plotW) {
+        pushStyle();
+            noFill();
+            stroke(0);
+            strokeWeight(2);
+            rect(plotX, graphY, plotW, graphH);
+        popStyle();
+
+        // X-axis ticks (frequency)
+        pushStyle();
+            int tickMarkSize = 7;
+            float axisY = graphY + graphH;
+            stroke(0);
+            fill(0);
+            strokeWeight(2);
+            textSize(10);
+
+            int numXTicks = 5;
+            for (int i = 0; i < numXTicks; i++) {
+                float frac = (float)i / (numXTicks - 1);
+                float tx = plotX + frac * plotW;
+                line(tx, axisY, tx, axisY + tickMarkSize);
+
+                String label;
+                if (useMelScale && melFilterBank != null) {
+                    int melIdx = round(frac * (nMelBands - 1));
+                    float hz = melFilterBank.getMelBandCenterHz(melIdx);
+                    label = nf(hz, 0, 1);
+                } else {
+                    int labelIdx = round(frac * (vertAxisLabel.length - 1));
+                    label = Integer.toString(vertAxisLabel[labelIdx]);
+                }
+                text(label, tx - textWidth(label)/2, axisY + tickMarkSize * 3);
+            }
+        popStyle();
+    }
+
     // ============ GRID & CURVE DRAWING ============
 
     private void drawGridLines() {
         float[] dbTicks = {0, -10, -20, -30, -40};
+        int numXTicks = 5;
 
+        // Grid for left subplot (Ch Top)
+        drawSubplotGrid(leftPlotX, halfW, dbTicks, numXTicks);
+        // Grid for right subplot (Ch Bot)
+        drawSubplotGrid(rightPlotX, halfW, dbTicks, numXTicks);
+    }
+
+    private void drawSubplotGrid(int plotX, int plotW, float[] dbTicks, int numXTicks) {
         // Horizontal dashed grid lines at dB ticks
         for (int i = 0; i < dbTicks.length; i++) {
             float frac = (dbTicks[i] - dBMin) / (dBMax - dBMin);
             float gy = graphY + (1.0f - frac) * graphH;
-            drawDashedLine(graphX, gy, graphX + graphW, gy, color(200), 8, 4);
+            drawDashedLine(plotX, gy, plotX + plotW, gy, color(200), 8, 4);
         }
 
         // Vertical dashed grid lines at frequency tick positions
-        int numXTicks = 5;
         for (int i = 0; i < numXTicks; i++) {
             float frac = (float)i / (numXTicks - 1);
-            float gx = graphX + frac * graphW;
+            float gx = plotX + frac * plotW;
             drawDashedLine(gx, graphY, gx, graphY + graphH, color(200), 8, 4);
         }
     }
@@ -330,7 +348,7 @@ class W_Spectrogram extends Widget {
         }
     }
 
-    private void drawFilledCurve(float[] data, color fillColor, color lineColor) {
+    private void drawFilledCurve(float[] data, color fillColor, color lineColor, int plotX) {
         if (data == null || data.length < 2) return;
 
         float baselineY = graphY + graphH;
@@ -341,7 +359,7 @@ class W_Spectrogram extends Widget {
         fill(fillColor);
         beginShape(QUAD_STRIP);
         for (int i = 0; i < n; i++) {
-            float px = graphX + (float)i / (numDisplayBins - 1) * graphW;
+            float px = plotX + (float)i / (numDisplayBins - 1) * halfW;
             float py = graphY + (1.0f - data[i]) * graphH;
             py = constrain(py, graphY, graphY + graphH);
             vertex(px, baselineY);
@@ -355,7 +373,7 @@ class W_Spectrogram extends Widget {
         strokeWeight(1.5f);
         beginShape(LINE_STRIP);
         for (int i = 0; i < n; i++) {
-            float px = graphX + (float)i / (numDisplayBins - 1) * graphW;
+            float px = plotX + (float)i / (numDisplayBins - 1) * halfW;
             float py = graphY + (1.0f - data[i]) * graphH;
             py = constrain(py, graphY, graphY + graphH);
             vertex(px, py);
@@ -363,27 +381,23 @@ class W_Spectrogram extends Widget {
         endShape();
     }
 
-    private void drawLegend() {
-        int legendX = graphX + graphW - 140;
-        int legendY = graphY + 8;
-        int swatchSize = 12;
-
+    private void drawSubplotTitles() {
         pushStyle();
-        textSize(11);
-        textAlign(LEFT, CENTER);
+        textSize(12);
+        textAlign(CENTER, TOP);
 
-        // Top group
+        // Left title (Ch Top)
         fill(topColor);
         noStroke();
-        rect(legendX, legendY, swatchSize, swatchSize);
+        rect(leftPlotX + halfW/2 - 30, graphY - 2, 12, 12);
         fill(0);
-        text("Ch Top", legendX + swatchSize + 5, legendY + swatchSize/2);
+        text("Ch Top", leftPlotX + halfW/2 + 4, graphY);
 
-        // Bottom group
+        // Right title (Ch Bot)
         fill(botColor);
-        rect(legendX, legendY + swatchSize + 6, swatchSize, swatchSize);
+        rect(rightPlotX + halfW/2 - 30, graphY - 2, 12, 12);
         fill(0);
-        text("Ch Bot", legendX + swatchSize + 5, legendY + swatchSize + 6 + swatchSize/2);
+        text("Ch Bot", rightPlotX + halfW/2 + 4, graphY);
 
         popStyle();
     }
@@ -525,6 +539,16 @@ class W_Spectrogram extends Widget {
         for (int i = 0; i < botChansToActivate.length; i++) {
             spectChanSelectBot.setToggleState(botChansToActivate[i], true);
         }
+    }
+
+    void computePlotLayout() {
+        graphX = x + paddingLeft;
+        graphY = y + paddingTop;
+        graphW = w - paddingRight - paddingLeft;
+        graphH = h - paddingBottom - paddingTop;
+        halfW = (graphW - plotGap) / 2;
+        leftPlotX = graphX;
+        rightPlotX = graphX + halfW + plotGap;
     }
 
     void flexSpectrogramSizeAndPosition() {
