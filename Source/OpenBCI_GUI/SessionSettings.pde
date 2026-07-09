@@ -89,6 +89,7 @@ class SessionSettings {
     int spectFreqScaleSave;   // 0=Linear, 1=Mel
     int spectColormapSave;    // 0=Inferno, 1=Jet, 2=Viridis, 3=BlueGreen
     int spectDBRangeSave;     // index 0=-20, 1=-40, 2=-60, 3=-80, 4=-100 dB
+    int spectSmoothingSave;   // index 0=None, 1=Light, 2=Medium, 3=Heavy, 4=Max
 
     //default configuration settings file location and file name variables
     private String sessionPath = "";
@@ -177,6 +178,7 @@ class SessionSettings {
     int spectFreqScaleLoad;
     int spectColormapLoad;
     int spectDBRangeLoad;
+    int spectSmoothingLoad;
 
     //Networking Settings save/load variables
     int nwProtocolLoad;
@@ -464,6 +466,7 @@ class SessionSettings {
         saveSpectrogramSettings.setInt("Spectrogram_FreqScale", spectFreqScaleSave);
         saveSpectrogramSettings.setInt("Spectrogram_Colormap", spectColormapSave);
         saveSpectrogramSettings.setInt("Spectrogram_dB Range", spectDBRangeSave);
+        saveSpectrogramSettings.setInt("Spectrogram_Smoothing", spectSmoothingSave);
         saveSettingsJSONData.setJSONObject(kJSONKeySpectrogram, saveSpectrogramSettings);
 
         ///////////////////////////////////////////////Setup new JSON object to save EMG Settings
@@ -658,6 +661,7 @@ class SessionSettings {
             spectFreqScaleLoad = loadSpectSettings.getInt("Spectrogram_FreqScale", 0);
             spectColormapLoad = loadSpectSettings.getInt("Spectrogram_Colormap", 0);
             spectDBRangeLoad = loadSpectSettings.getInt("Spectrogram_dB Range", 1);
+            spectSmoothingLoad = loadSpectSettings.getInt("Spectrogram_Smoothing", 1);  // default "Light"
             //println(loadSpectActiveChanTop, loadSpectActiveChanBot);
         } catch (Exception e) {
             e.printStackTrace();
@@ -828,6 +832,9 @@ class SessionSettings {
         SpectrogramDBRange(spectDBRangeLoad);
             String[] dbRangeLabels = {"0 to -20 dB", "0 to -40 dB", "0 to -60 dB", "0 to -80 dB", "0 to -100 dB"};
             w_spectrogram.cp5_widget.getController("SpectrogramDBRange").getCaptionLabel().setText(dbRangeLabels[spectDBRangeLoad]);
+        SpectrogramSmoothing(spectSmoothingLoad);
+            String[] smoothLabels = {"None", "Light", "Medium", "Heavy", "Max"};
+            w_spectrogram.cp5_widget.getController("SpectrogramSmoothing").getCaptionLabel().setText(smoothLabels[spectSmoothingLoad]);
         try {
             //apply channel checkbox settings
             w_spectrogram.spectChanSelectTop.deactivateAllButtons();

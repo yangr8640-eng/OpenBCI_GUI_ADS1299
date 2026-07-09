@@ -55,6 +55,8 @@ class W_Spectrogram extends Widget {
     private float dBMax = 0.0f;
     private int currentDBRange = 1;      // index into dbRangeOptions
     private final int[] dbRangeOptions = {-20, -40, -60, -80, -100};
+    private int currentSmoothing = 1;    // index into smoothingOptions (1="Medium")
+    private final float[] smoothingOptions = {1.00f, 0.50f, 0.30f, 0.15f, 0.08f};
 
     // Gradient endpoints: red = high power (0dB), blue = low power (-40dB)
     private final color highPowerColor = #FF3030;
@@ -63,6 +65,10 @@ class W_Spectrogram extends Widget {
     // Cached display data
     private float[] topSpectrum;
     private float[] botSpectrum;
+    private float[] topPrevDB;     // previous frame's dB values for temporal smoothing
+    private float[] botPrevDB;
+    private float smoothAlpha = 0.30f; // 0=full smoothing, 1=instant
+    private boolean hasPrevFrame = false;
     private int numDisplayBins;
     private boolean wasRunning = false;
 
@@ -87,6 +93,8 @@ class W_Spectrogram extends Widget {
         settings.spectFreqScaleSave = 0;
         settings.spectColormapSave = 0;
         settings.spectDBRangeSave = currentDBRange;
+        settings.spectSmoothingSave = currentSmoothing;
+        smoothAlpha = smoothingOptions[currentSmoothing];
         vertAxisLabel = vertAxisLabels[settings.spectMaxFrqSave];
 
         // Set up dropdowns
@@ -94,6 +102,7 @@ class W_Spectrogram extends Widget {
         addDropdown("SpectrogramFreqScale", "Freq Scale", Arrays.asList("Linear", "Mel"), settings.spectFreqScaleSave);
         addDropdown("SpectrogramColormap", "Colormap", Arrays.asList("Inferno", "Jet", "Viridis", "BlueGreen"), settings.spectColormapSave);
         addDropdown("SpectrogramDBRange", "dB Range", Arrays.asList("0 to -20 dB", "0 to -40 dB", "0 to -60 dB", "0 to -80 dB", "0 to -100 dB"), settings.spectDBRangeSave);
+        addDropdown("SpectrogramSmoothing", "Smoothing", Arrays.asList("None", "Light", "Medium", "Heavy", "Max"), settings.spectSmoothingSave);
 
         // Determine initial number of display bins
         numDisplayBins = fftBuff[0].specSize();
@@ -134,6 +143,7 @@ class W_Spectrogram extends Widget {
 
     private void onStartRunning() {
         wasRunning = true;
+        hasPrevFrame = false;
         buildMelFilterBank();
         int specSize = fftBuff[0].specSize();
         cachedSpectra = new float[nchan][specSize];
@@ -142,6 +152,8 @@ class W_Spectrogram extends Widget {
         numDisplayBins = useMelScale ? nMelBands : specSize;
         topSpectrum = new float[numDisplayBins];
         botSpectrum = new float[numDisplayBins];
+        topPrevDB = new float[numDisplayBins];
+        botPrevDB = new float[numDisplayBins];
     }
 
     private void onStopRunning() {
@@ -175,6 +187,8 @@ class W_Spectrogram extends Widget {
             // Draw legend for channel groups
             drawLegend();
             popStyle();
+
+            hasPrevFrame = true;
         }
 
         spectChanSelectTop.draw();
@@ -492,6 +506,11 @@ class W_Spectrogram extends Widget {
             mean /= nfft;
             for (int j = 0; j < nfft; j++) workBuffer[j] -= mean;
 
+            // Apply Hanning window to reduce spectral leakage
+            for (int j = 0; j < nfft; j++) {
+                workBuffer[j] *= 0.5f * (1.0f - cos(TWO_PI * j / (nfft - 1)));
+            }
+
             fftBuffSpectrogram[chan].forward(workBuffer);
 
             int specSize = fftBuffSpectrogram[chan].specSize();
@@ -552,7 +571,17 @@ class W_Spectrogram extends Widget {
         for (int i = 0; i < displayLen; i++) {
             float val = max(displayData[i], 1e-10f);
             float dbVal = 10.0f * (float)Math.log10(val) - 10.0f * (float)Math.log10(maxAmp);
-            dest[i] = constrain((dbVal - dBMin) / (dBMax - dBMin), 0.0f, 1.0f);
+            float normalized = constrain((dbVal - dBMin) / (dBMax - dBMin), 0.0f, 1.0f);
+
+            // Temporal exponential smoothing (simulates Welch averaging)
+            float[] prevBuf = (sel == spectChanSelectTop) ? topPrevDB : botPrevDB;
+            if (prevBuf != null && i < prevBuf.length) {
+                if (hasPrevFrame) {
+                    normalized = smoothAlpha * normalized + (1.0f - smoothAlpha) * prevBuf[i];
+                }
+                prevBuf[i] = normalized;
+            }
+            dest[i] = normalized;
         }
     }
 
@@ -645,4 +674,10 @@ void SpectrogramDBRange(int n) {
     settings.spectDBRangeSave = n;
     w_spectrogram.currentDBRange = n;
     w_spectrogram.dBMin = w_spectrogram.dbRangeOptions[n];
+}
+
+void SpectrogramSmoothing(int n) {
+    settings.spectSmoothingSave = n;
+    w_spectrogram.currentSmoothing = n;
+    w_spectrogram.smoothAlpha = w_spectrogram.smoothingOptions[n];
 }
