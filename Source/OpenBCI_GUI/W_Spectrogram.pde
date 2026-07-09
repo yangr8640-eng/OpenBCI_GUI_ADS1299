@@ -275,6 +275,14 @@ class W_Spectrogram extends Widget {
                 text(label, axisX - tickMarkSize*2 - textWidth(label), ty + 4);
             }
         popStyle();
+
+        // Formula annotation (small text, bottom-left of plot area)
+        pushStyle();
+            fill(140);
+            textSize(9);
+            textAlign(LEFT, BOTTOM);
+            text("dB = 10·log₁₀(P) - 10·log₁₀(Pmax)", graphX + 6, graphY + graphH - 4);
+        popStyle();
     }
 
     // ============ GRID, CURVE & COLOR BAR ============
@@ -312,7 +320,7 @@ class W_Spectrogram extends Widget {
         int n = min(data.length, numDisplayBins);
         float baselineY = graphY + graphH;
 
-        int bands = 80;   // more bands = smoother gradient
+        int bands = 160;  // fine bands for smooth gradient
         float bandH = graphH / (float)bands;
 
         noStroke();
