@@ -308,6 +308,7 @@ final int navBarHeight = 32;
 TopNav topNav;
 
 ddf.minim.analysis.FFT[] fftBuff = new ddf.minim.analysis.FFT[nchan];    //from the minim library
+ddf.minim.analysis.FFT[] fftBuffSpectrogram = new ddf.minim.analysis.FFT[nchan]; //unsmoothed FFT for spectrogram widget
 boolean isFFTFiltered = true; //yes by default ... this is used in dataProcessing.pde to determine which uV array feeds the FFT calculation
 
 StringBuilder globalScreenResolution;
@@ -332,7 +333,7 @@ void settings() {
         win_w = 980;
         win_h = 580;
     }
-    size(win_w, win_h, P2D);
+    size(win_w, win_h, JAVA2D);
 
     globalScreenResolution = new StringBuilder("Screen Resolution: ");
     globalScreenResolution.append(displayWidth);
@@ -787,6 +788,8 @@ void initFFTObjectsAndBuffer() {
     for (int Ichan=0; Ichan < nchan; Ichan++) {
         // verbosePrint("Init FFT Buff – " + Ichan);
         fftBuff[Ichan] = new ddf.minim.analysis.FFT(getNfftSafe(), currentBoard.getSampleRate());
+        fftBuffSpectrogram[Ichan] = new ddf.minim.analysis.FFT(getNfftSafe(), currentBoard.getSampleRate());
+        fftBuffSpectrogram[Ichan].window(FFT.HAMMING);
     }  //make the FFT objects
 
     //Attempt initialization. If error, print to console and exit function.

@@ -64,6 +64,17 @@ class W_Spectrogram extends Widget {
     float[] topFFTAvg;
     float[] botFFTAvg;
 
+    // Enhanced spectrogram processing
+    private MelFilterBank melFilterBank;
+    private int nMelBands = 64;
+    private int currentColormap = 0;       // 0=Inferno, 1=Jet, 2=Viridis, 3=BlueGreen
+    private boolean useMelScale = false;   // false=Linear, true=Mel
+    private color[] colormapLUT;
+    private float[][] cachedSpectra;       // [nchan][specSize] — cached per-channel FFT amplitudes
+    private float[] workBuffer;            // reused float buffer for FFT input
+    private float dBMin = -40.0f;
+    private float dBMax = 0.0f;
+
     W_Spectrogram(PApplet _parent){
         super(_parent); //calls the parent CONSTRUCTOR method of Widget (DON'T REMOVE)
 
@@ -87,7 +98,8 @@ class W_Spectrogram extends Widget {
 
         settings.spectMaxFrqSave = 1;
         settings.spectSampleRateSave = 2;
-        settings.spectLogLinSave = 0;
+        settings.spectFreqScaleSave = 0;
+        settings.spectColormapSave = 0;
         vertAxisLabel = vertAxisLabels[settings.spectMaxFrqSave];
         horizAxisLabel = horizAxisLabels[settings.spectSampleRateSave];
         horizAxisLabelStrings = new StringList();
@@ -95,16 +107,23 @@ class W_Spectrogram extends Widget {
         fetchTimeStrings(numHorizAxisDivs);
 
         //This is the protocol for setting up dropdowns.
-        //Note that these 3 dropdowns correspond to the 3 global functions below
-        //You just need to make sure the "id" (the 1st String) has the same name as the corresponding function
+        //Note that these dropdowns correspond to the global callback functions of the same name
         addDropdown("SpectrogramMaxFreq", "Max Freq", Arrays.asList(settings.spectMaxFrqArray), settings.spectMaxFrqSave);
         addDropdown("SpectrogramSampleRate", "Window", Arrays.asList(settings.spectSampleRateArray), settings.spectSampleRateSave);
-        addDropdown("SpectrogramLogLin", "Log/Lin", Arrays.asList(settings.fftLogLinArray), settings.spectLogLinSave);
+        addDropdown("SpectrogramFreqScale", "Freq Scale", Arrays.asList("Linear", "Mel"), settings.spectFreqScaleSave);
+        addDropdown("SpectrogramColormap", "Colormap", Arrays.asList("Inferno", "Jet", "Viridis", "BlueGreen"), settings.spectColormapSave);
 
-        //Resize the height of the data image using default 
+        //Initialize the colormap lookup table
+        currentColormap = settings.spectColormapSave;
+        colormapLUT = getColormapLUT(currentColormap);
+
+        //Resize the height of the data image using default
         dataImageH = vertAxisLabel[0] * 2;
         //Create image using correct dimensions! Fixes bug where image size and labels do not align on session start.
         dataImg = createImage(dataImageW, dataImageH, RGB);
+
+        //Build the mel filterbank for the default FFT configuration
+        buildMelFilterBank();
     }
 
     void update(){
@@ -130,6 +149,8 @@ class W_Spectrogram extends Widget {
             xPos = dataImg.width - 1;
             //Fetch/calculate the time strings for the horizontal axis ticks
             fetchTimeStrings(numHorizAxisDivs);
+            //Compute unsmoothed FFT for all active channels (cached for draw)
+            computeUnsmooothedSpectra();
         }
         
         //State change check
@@ -143,6 +164,12 @@ class W_Spectrogram extends Widget {
     private void onStartRunning() {
         wasRunning = true;
         lastShift = millis();
+        // Rebuild mel filterbank (sample rate may have changed)
+        buildMelFilterBank();
+        // Initialize cached spectra array
+        int specSize = fftBuff[0].specSize();
+        cachedSpectra = new float[nchan][specSize];
+        workBuffer = new float[getNfftSafe()];
     }
 
     private void onStopRunning() {
@@ -181,46 +208,41 @@ class W_Spectrogram extends Widget {
 
                 lastShift += scrollSpeed;
             }
-            //for (int i = 0; i < fftLin_L.specSize() - 80; i++) {
-            for (int i = 0; i <= dataImg.height/2; i++) {
-                //LEFT SPECTROGRAM ON TOP
-                float hueValue = hueLimit - map((fftAvgs(spectChanSelectTop.activeChan, i)*32), 0, 256, 0, hueLimit);
-                if (settings.spectLogLinSave == 0) {
-                    hueValue = map(log10(hueValue), 0, 2, 0, hueLimit);
-                }
-                // colorMode is HSB, the range for hue is 256, for saturation is 100, brightness is 100.
-                colorMode(HSB, 256, 100, 100);
-                // color for stroke is specified as hue, saturation, brightness.
-                stroke(int(hueValue), 100, 80);
-                // plot a point using the specified stroke
-                //point(xPos, i);
-                int loc = xPos + ((dataImg.height/2 - i) * dataImg.width);
-                if (loc >= dataImg.width * dataImg.height) loc = dataImg.width * dataImg.height - 1;
-                try {
-                    dataImg.pixels[loc] = color(int(hueValue), 100, 80);
-                } catch (Exception e) {
-                    println("Major drawing error Spectrogram Left image!");
-                }
 
-                //RIGHT SPECTROGRAM ON BOTTOM
-                hueValue = hueLimit - map((fftAvgs(spectChanSelectBot.activeChan, i)*32), 0, 256, 0, hueLimit);
-                if (settings.spectLogLinSave == 0) {
-                    hueValue = map(log10(hueValue), 0, 2, 0, hueLimit);
-                }
-                // colorMode is HSB, the range for hue is 256, for saturation is 100, brightness is 100.
-                colorMode(HSB, 256, 100, 100);
-                // color for stroke is specified as hue, saturation, brightness.
-                stroke(int(hueValue), 100, 80);
-                int y_offset = -1;
-                // Pixel = X + ((Y + Height/2) * Width)
-                loc = xPos + ((i + dataImg.height/2 + y_offset) * dataImg.width);
+            // Render new pixel column for each channel group (top/bottom)
+            int numRows = dataImg.height / 2;
+            colorMode(RGB, 255, 255, 255);
+
+            // --- TOP channel group ---
+            float[] specDataTop = getSpectrogramData(spectChanSelectTop, numRows);
+            for (int row = 0; row < numRows; row++) {
+                float normVal = (row < specDataTop.length) ? specDataTop[row] : 0.0f;
+                int lutIdx = constrain((int)(normVal * (COLORMAP_LUT_SIZE - 1)), 0, COLORMAP_LUT_SIZE - 1);
+                int pixelRow = numRows - 1 - row; // flip so low freq at bottom
+                int loc = xPos + (pixelRow * dataImg.width);
                 if (loc >= dataImg.width * dataImg.height) loc = dataImg.width * dataImg.height - 1;
                 try {
-                    dataImg.pixels[loc] = color(int(hueValue), 100, 80);
+                    dataImg.pixels[loc] = colormapLUT[lutIdx];
                 } catch (Exception e) {
-                    println("Major drawing error Spectrogram Right image!");
+                    println("Spectrogram Top draw error!");
                 }
             }
+
+            // --- BOTTOM channel group ---
+            float[] specDataBot = getSpectrogramData(spectChanSelectBot, numRows);
+            for (int row = 0; row < numRows; row++) {
+                float normVal = (row < specDataBot.length) ? specDataBot[row] : 0.0f;
+                int lutIdx = constrain((int)(normVal * (COLORMAP_LUT_SIZE - 1)), 0, COLORMAP_LUT_SIZE - 1);
+                int pixelRow = row + numRows;
+                int loc = xPos + (pixelRow * dataImg.width);
+                if (loc >= dataImg.width * dataImg.height) loc = dataImg.width * dataImg.height - 1;
+                try {
+                    dataImg.pixels[loc] = colormapLUT[lutIdx];
+                } catch (Exception e) {
+                    println("Spectrogram Bottom draw error!");
+                }
+            }
+
             dataImg.updatePixels();
             popStyle();
         }
@@ -318,11 +340,21 @@ class W_Spectrogram extends Widget {
             strokeWeight(2);
             for (int i = 0; i <= numVertAxisDivs; i++) {
                 float offset = scaledH * dataImageH * (float(i) / numVertAxisDivs);
-                //if (i <= numVertAxisDivs/2) offset -= 2;
                 line(vertAxisX, vertAxisY + offset, vertAxisX - tickMarkSize, vertAxisY + offset);
+                // Determine label text: mel or linear
+                String label;
+                if (useMelScale && melFilterBank != null) {
+                    // Map position to mel band, then to Hz
+                    float frac = (float)i / numVertAxisDivs;
+                    int melIdx = round(frac * (nMelBands - 1));
+                    float hz = melFilterBank.getMelBandCenterHz(melIdx);
+                    label = nf(hz, 0, 1); // 1 decimal place
+                } else {
+                    label = Integer.toString(vertAxisLabel[i]);
+                }
                 if (vertAxisLabel[i] == 0) midLineY = int(vertAxisY + offset);
                 offset += paddingTop/2;
-                text(vertAxisLabel[i], vertAxisX - tickMarkSize*2 - textWidth(Integer.toString(vertAxisLabel[i])), vertAxisY + offset);
+                text(label, vertAxisX - tickMarkSize*2 - (int)textWidth(label), vertAxisY + offset);
             }
         popStyle();
 
@@ -340,7 +372,7 @@ class W_Spectrogram extends Widget {
 
     void drawColorScaleReference() {
         int colorScaleHeight = 128;
-        //Dynamically scale the Log/Lin amplitude-to-color reference line. If it won't fit, don't draw it.
+        //Dynamically scale the amplitude-to-color reference bar. If it won't fit, don't draw it.
         if (graphH < colorScaleHeight) {
             colorScaleHeight = int(h * 1/2);
             if (colorScaleHeight > graphH) {
@@ -348,17 +380,13 @@ class W_Spectrogram extends Widget {
             }
         }
         pushStyle();
+            colorMode(RGB, 255, 255, 255);
             //draw color scale reference to the right of the spectrogram
             for (int i = 0; i < colorScaleHeight; i++) {
-                float hueValue = hueLimit - map(i * 2, 0, colorScaleHeight*2, 0, hueLimit);
-                if (settings.spectLogLinSave == 0) {
-                    hueValue = map(log(hueValue) / log(10), 0, 2, 0, hueLimit);
-                }
-                //println(hueValue);
-                // colorMode is HSB, the range for hue is 256, for saturation is 100, brightness is 100.
-                colorMode(HSB, 256, 100, 100);
-                // color for stroke is specified as hue, saturation, brightness.
-                stroke(ceil(hueValue), 100, 80);
+                float frac = (float)i / (float)(colorScaleHeight - 1);
+                int lutIdx = (int)(frac * (COLORMAP_LUT_SIZE - 1));
+                lutIdx = constrain(lutIdx, 0, COLORMAP_LUT_SIZE - 1);
+                stroke(colormapLUT[lutIdx]);
                 strokeWeight(10);
                 point(x + w - paddingRight/2 + 1, midLineY + colorScaleHeight/2 - i);
             }
@@ -403,12 +431,118 @@ class W_Spectrogram extends Widget {
         scrollSpeed = i;
     }
 
-    float fftAvgs(List<Integer> _activeChan, int freqBand) {
-        float sum = 0f;
-        for (int i = 0; i < _activeChan.size(); i++) {
-            sum += fftBuff[_activeChan.get(i)].getBand(freqBand);
+    // ============ Enhanced Spectrogram Processing Methods ============
+
+    /**
+     * Compute unsmoothed FFT for all channels in a given channel group.
+     * Uses fftBuffSpectrogram[] which is never smoothed by DataProcessing.
+     * Results cached in cachedSpectra[][] for use by getSpectrogramData().
+     */
+    private void computeUnsmooothedSpectra() {
+        int nfft = getNfftSafe();
+        if (workBuffer == null || workBuffer.length != nfft) {
+            workBuffer = new float[nfft];
         }
-        return sum / _activeChan.size();
+
+        // Gather all active channels from both groups
+        java.util.Set<Integer> allActiveChans = new java.util.HashSet<Integer>();
+        for (int i : spectChanSelectTop.activeChan) allActiveChans.add(i);
+        for (int i : spectChanSelectBot.activeChan) allActiveChans.add(i);
+
+        for (int chan : allActiveChans) {
+            // Extract last Nfft samples from filtered buffer
+            float[] chanData = dataProcessingFilteredBuffer[chan];
+            int dataLen = chanData.length;
+            for (int j = 0; j < nfft; j++) {
+                workBuffer[j] = chanData[dataLen - nfft + j];
+            }
+            // Remove DC mean
+            float mean = 0.0f;
+            for (int j = 0; j < nfft; j++) mean += workBuffer[j];
+            mean /= nfft;
+            for (int j = 0; j < nfft; j++) workBuffer[j] -= mean;
+
+            // Forward FFT (unsmoothed)
+            fftBuffSpectrogram[chan].forward(workBuffer);
+
+            // Read amplitude spectrum (single-sided, normalized)
+            int specSize = fftBuffSpectrogram[chan].specSize();
+            if (cachedSpectra == null || cachedSpectra.length <= chan || cachedSpectra[chan].length != specSize) {
+                if (cachedSpectra == null) cachedSpectra = new float[nchan][specSize];
+                else cachedSpectra[chan] = new float[specSize];
+            }
+            for (int b = 0; b < specSize; b++) {
+                float amp = fftBuffSpectrogram[chan].getBand(b) / nfft;
+                if (b > 0 && b < specSize - 1) amp *= 2.0f;
+                cachedSpectra[chan][b] = amp;
+            }
+        }
+    }
+
+    /**
+     * Compute spectrogram data (dB-normalized, 0-1 mapped) for a channel group.
+     * Returns float[numRows] where each value is the normalized [0,1] power
+     * for that display row.
+     */
+    private float[] getSpectrogramData(ChannelSelect sel, int numRows) {
+        float[] result = new float[numRows];
+        if (sel.activeChan.size() == 0) return result;
+
+        int specSize = fftBuff[0].specSize();
+
+        // Average amplitude spectrum across active channels
+        float[] avgAmp = new float[specSize];
+        for (int chan : sel.activeChan) {
+            if (cachedSpectra == null || cachedSpectra.length <= chan) continue;
+            for (int b = 0; b < specSize; b++) {
+                avgAmp[b] += cachedSpectra[chan][b];
+            }
+        }
+        for (int b = 0; b < specSize; b++) {
+            avgAmp[b] /= sel.activeChan.size();
+        }
+
+        // Apply mel filterbank if in mel mode
+        float[] displayData;
+        int displayLen;
+        if (useMelScale && melFilterBank != null) {
+            displayData = melFilterBank.apply(avgAmp);
+            displayLen = min(nMelBands, numRows);
+        } else {
+            displayData = avgAmp;
+            displayLen = min(specSize, numRows);
+        }
+
+        // Convert to dB power and normalize to [0, 1]
+        // Find max for dB reference
+        float maxAmp = 1e-10f;
+        for (int i = 0; i < displayLen; i++) {
+            if (displayData[i] > maxAmp) maxAmp = displayData[i];
+        }
+        for (int i = 0; i < displayLen; i++) {
+            float val = max(displayData[i], 1e-10f);
+            float dbVal = 10.0f * (float)Math.log10(val) - 10.0f * (float)Math.log10(maxAmp);
+            result[i] = constrain((dbVal - dBMin) / (dBMax - dBMin), 0.0f, 1.0f);
+        }
+
+        return result;
+    }
+
+    /**
+     * Build or rebuild the mel filterbank based on current FFT and display settings.
+     */
+    private void buildMelFilterBank() {
+        try {
+            int nfft = getNfftSafe();
+            float sr = currentBoard.getSampleRate();
+            if (sr <= 0) return;
+            float fMax = vertAxisLabel[0]; // max frequency from current dropdown setting
+            int specSize = nfft / 2 + 1;
+            melFilterBank = new MelFilterBank(specSize, nMelBands, sr, 0.5f, fMax);
+        } catch (Exception e) {
+            // Silently handle — mel filterbank will be built later when
+            // FFT objects are fully initialized
+        }
     }
 
     void fetchTimeStrings(int numAxisTicks) {
@@ -447,10 +581,15 @@ void SpectrogramMaxFreq(int n) {
     settings.spectMaxFrqSave = n;
     //reset the vertical axis labels
     w_spectrogram.vertAxisLabel = w_spectrogram.vertAxisLabels[n];
-    //Resize the height of the data image
-    w_spectrogram.dataImageH = w_spectrogram.vertAxisLabel[0] * 2;
+    //Resize the height of the data image (linear or mel)
+    if (w_spectrogram.useMelScale) {
+        w_spectrogram.dataImageH = w_spectrogram.nMelBands * 2;
+    } else {
+        w_spectrogram.dataImageH = w_spectrogram.vertAxisLabel[0] * 2;
+    }
     //overwrite the existing image because the sample rate is about to change
     w_spectrogram.dataImg = createImage(w_spectrogram.dataImageW, w_spectrogram.dataImageH, RGB);
+    w_spectrogram.buildMelFilterBank();
 }
 
 void SpectrogramSampleRate(int n) {
@@ -478,6 +617,21 @@ void SpectrogramSampleRate(int n) {
     w_spectrogram.fetchTimeStrings(w_spectrogram.numHorizAxisDivs);
 }
 
-void SpectrogramLogLin(int n) {
-    settings.spectLogLinSave = n;
+void SpectrogramFreqScale(int n) {
+    settings.spectFreqScaleSave = n;
+    w_spectrogram.useMelScale = (n == 1); // 0=Linear, 1=Mel
+    // Rebuild image dimensions for the new scale mode
+    if (w_spectrogram.useMelScale) {
+        w_spectrogram.dataImageH = w_spectrogram.nMelBands * 2;
+    } else {
+        w_spectrogram.dataImageH = w_spectrogram.vertAxisLabel[0] * 2;
+    }
+    w_spectrogram.dataImg = createImage(w_spectrogram.dataImageW, w_spectrogram.dataImageH, RGB);
+    w_spectrogram.buildMelFilterBank();
+}
+
+void SpectrogramColormap(int n) {
+    settings.spectColormapSave = n;
+    w_spectrogram.currentColormap = n;
+    w_spectrogram.colormapLUT = getColormapLUT(n);
 }
