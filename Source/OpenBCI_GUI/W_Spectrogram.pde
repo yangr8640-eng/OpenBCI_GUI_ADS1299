@@ -4,8 +4,8 @@
 //                  W_Spectrogram.pde               //
 //                                                  //
 //    PSD Plot: X = Frequency (Hz), Y = Power (dB)  //
-//    Overlaid filled-area curves for two channel   //
-//    groups with mel scale and colormap support.   //
+//    Gradient-colored curve: red = high power,     //
+//    blue = low power, with color bar on right.    //
 //                                                  //
 //    Created by: Richard Waltman, September 2019   //
 //    Enhanced: Mel scale + PSD plot, July 2026     //
@@ -22,17 +22,18 @@ class W_Spectrogram extends Widget {
 
     // PSD Plot Fields
     int paddingLeft = 54;
-    int paddingRight = 26;
+    int paddingRight = 60;   // extra space for color bar on right
     int paddingTop = 8;
     int paddingBottom = 50;
     int graphX = 0;
     int graphY = 0;
     int graphW = 0;
     int graphH = 0;
-    int plotGap = 20;        // horizontal gap between left/right subplots
-    int halfW = 0;           // width of each subplot
-    int leftPlotX = 0;       // X origin of left subplot (Ch Top)
-    int rightPlotX = 0;      // X origin of right subplot (Ch Bot)
+
+    // Color bar fields
+    int colorBarWidth = 14;
+    int colorBarX = 0;
+    int colorBarGap = 10;
 
     final int[][] vertAxisLabels = {
         {0, 5, 10, 15, 20},
@@ -48,20 +49,14 @@ class W_Spectrogram extends Widget {
     private MelFilterBank melFilterBank;
     private int nMelBands = 64;
     private boolean useMelScale = false;
-    private int currentColorTheme = 0;     // 0=Inferno, 1=Jet, 2=Viridis, 3=BlueGreen
     private float[][] cachedSpectra;       // [nchan][specSize] — per-channel FFT amplitudes
     private float[] workBuffer;            // reused float buffer for FFT input
     private float dBMin = -40.0f;
     private float dBMax = 0.0f;
 
-    // Curve colors per theme {top, bot}
-    private final color[][] themeColors = {
-        {#FF3030, #3080FF},  // Inferno: red + blue
-        {#00BFFF, #FF4500},  // Jet: cyan + red-orange
-        {#5EC962, #3B528B},  // Viridis: green + blue
-        {#00C060, #004080}   // BlueGreen: green + navy
-    };
-    private color topColor, botColor;
+    // Gradient endpoints: red = high power (0dB), blue = low power (-40dB)
+    private final color highPowerColor = #FF3030;
+    private final color lowPowerColor  = #3080FF;
 
     // Cached display data
     private float[] topSpectrum;
@@ -90,10 +85,6 @@ class W_Spectrogram extends Widget {
         settings.spectFreqScaleSave = 0;
         settings.spectColormapSave = 0;
         vertAxisLabel = vertAxisLabels[settings.spectMaxFrqSave];
-
-        // Initialize curve colors
-        currentColorTheme = settings.spectColormapSave;
-        updateCurveColors();
 
         // Set up dropdowns
         addDropdown("SpectrogramMaxFreq", "Max Freq", Arrays.asList(settings.spectMaxFrqArray), settings.spectMaxFrqSave);
@@ -167,17 +158,18 @@ class W_Spectrogram extends Widget {
             computeSpectrumForGroup(spectChanSelectBot, botSpectrum);
 
             pushStyle();
-            // Draw grid lines for both subplots
+            // Draw grid lines
             drawGridLines();
 
-            // Draw filled area curves
-            color topFill = color(red(topColor), green(topColor), blue(topColor), 80);
-            color botFill = color(red(botColor), green(botColor), blue(botColor), 80);
-            drawFilledCurve(topSpectrum, topFill, topColor, leftPlotX);
-            drawFilledCurve(botSpectrum, botFill, botColor, rightPlotX);
+            // Draw gradient-colored curves (thin lines, color by power)
+            drawGradientCurve(topSpectrum);
+            drawGradientCurve(botSpectrum);
 
-            // Draw subplot titles
-            drawSubplotTitles();
+            // Draw color bar on the right
+            drawColorBar();
+
+            // Draw legend for channel groups
+            drawLegend();
             popStyle();
         }
 
@@ -212,32 +204,64 @@ class W_Spectrogram extends Widget {
     // ============ AXES ============
 
     void drawAxes() {
+        // X-axis label
         pushStyle();
-            // Shared X-axis label centered below both subplots
             fill(0);
             textSize(14);
-            text("Frequency (Hz)", x + w/2 - textWidth("Frequency (Hz)")/3, y + h - 9);
+            text("Frequency (Hz)", graphX + graphW/2 - textWidth("Frequency (Hz)")/3, y + h - 9);
         popStyle();
 
-        // Draw borders and X-axis for each subplot
-        drawSubplotAxes(leftPlotX, halfW);
-        drawSubplotAxes(rightPlotX, halfW);
+        // Plot border
+        pushStyle();
+            noFill();
+            stroke(0);
+            strokeWeight(2);
+            rect(graphX, graphY, graphW, graphH);
+        popStyle();
 
-        // Y-axis label (rotated) — shared, placed on the left
+        // X-axis ticks (frequency)
+        pushStyle();
+            int tickMarkSize = 7;
+            float axisY = graphY + graphH;
+            stroke(0);
+            fill(0);
+            strokeWeight(2);
+            textSize(11);
+
+            int numXTicks = 5;
+            for (int i = 0; i < numXTicks; i++) {
+                float frac = (float)i / (numXTicks - 1);
+                float tx = graphX + frac * graphW;
+                line(tx, axisY, tx, axisY + tickMarkSize);
+
+                String label;
+                if (useMelScale && melFilterBank != null) {
+                    int melIdx = round(frac * (nMelBands - 1));
+                    float hz = melFilterBank.getMelBandCenterHz(melIdx);
+                    label = nf(hz, 0, 1);
+                } else {
+                    int labelIdx = round(frac * (vertAxisLabel.length - 1));
+                    label = Integer.toString(vertAxisLabel[labelIdx]);
+                }
+                text(label, tx - textWidth(label)/2, axisY + tickMarkSize * 3);
+            }
+        popStyle();
+
+        // Y-axis label (rotated)
         pushStyle();
             pushMatrix();
+                translate(18, graphY + graphH/2 + textWidth("Power (dB)")/2);
                 rotate(radians(-90));
-                translate(-h/2 - textWidth("Power (dB)")/3, 20);
                 fill(0);
                 textSize(14);
-                text("Power (dB)", -y, x);
+                text("Power (dB)", 0, 0);
             popMatrix();
         popStyle();
 
-        // Y-axis ticks (dB) — shared, on the far left
+        // Y-axis ticks (dB)
         pushStyle();
             int tickMarkSize = 7;
-            float axisX = leftPlotX;
+            float axisX = graphX;
             stroke(0);
             fill(0);
             textSize(12);
@@ -253,79 +277,128 @@ class W_Spectrogram extends Widget {
         popStyle();
     }
 
-    /**
-     * Draw border and X-axis ticks for a single subplot at the given x-origin.
-     */
-    private void drawSubplotAxes(int plotX, int plotW) {
-        pushStyle();
-            noFill();
-            stroke(0);
-            strokeWeight(2);
-            rect(plotX, graphY, plotW, graphH);
-        popStyle();
-
-        // X-axis ticks (frequency)
-        pushStyle();
-            int tickMarkSize = 7;
-            float axisY = graphY + graphH;
-            stroke(0);
-            fill(0);
-            strokeWeight(2);
-            textSize(10);
-
-            int numXTicks = 5;
-            for (int i = 0; i < numXTicks; i++) {
-                float frac = (float)i / (numXTicks - 1);
-                float tx = plotX + frac * plotW;
-                line(tx, axisY, tx, axisY + tickMarkSize);
-
-                String label;
-                if (useMelScale && melFilterBank != null) {
-                    int melIdx = round(frac * (nMelBands - 1));
-                    float hz = melFilterBank.getMelBandCenterHz(melIdx);
-                    label = nf(hz, 0, 1);
-                } else {
-                    int labelIdx = round(frac * (vertAxisLabel.length - 1));
-                    label = Integer.toString(vertAxisLabel[labelIdx]);
-                }
-                text(label, tx - textWidth(label)/2, axisY + tickMarkSize * 3);
-            }
-        popStyle();
-    }
-
-    // ============ GRID & CURVE DRAWING ============
+    // ============ GRID, CURVE & COLOR BAR ============
 
     private void drawGridLines() {
         float[] dbTicks = {0, -10, -20, -30, -40};
-        int numXTicks = 5;
 
-        // Grid for left subplot (Ch Top)
-        drawSubplotGrid(leftPlotX, halfW, dbTicks, numXTicks);
-        // Grid for right subplot (Ch Bot)
-        drawSubplotGrid(rightPlotX, halfW, dbTicks, numXTicks);
-    }
-
-    private void drawSubplotGrid(int plotX, int plotW, float[] dbTicks, int numXTicks) {
         // Horizontal dashed grid lines at dB ticks
         for (int i = 0; i < dbTicks.length; i++) {
             float frac = (dbTicks[i] - dBMin) / (dBMax - dBMin);
             float gy = graphY + (1.0f - frac) * graphH;
-            drawDashedLine(plotX, gy, plotX + plotW, gy, color(200), 8, 4);
+            drawDashedLine(graphX, gy, graphX + graphW, gy, color(200), 8, 4);
         }
 
         // Vertical dashed grid lines at frequency tick positions
+        int numXTicks = 5;
         for (int i = 0; i < numXTicks; i++) {
             float frac = (float)i / (numXTicks - 1);
-            float gx = plotX + frac * plotW;
+            float gx = graphX + frac * graphW;
             drawDashedLine(gx, graphY, gx, graphY + graphH, color(200), 8, 4);
         }
     }
 
     /**
-     * Draw a dashed line from (x1,y1) to (x2,y2).
-     * @param dashLen  length of each dash segment in pixels
-     * @param gapLen   length of each gap between dashes in pixels
+     * Draw a gradient-colored curve: each segment's color is determined by
+     * its dB power level — red at 0dB (high power), blue at -40dB (low power).
      */
+    private void drawGradientCurve(float[] data) {
+        if (data == null || data.length < 2) return;
+
+        int n = min(data.length, numDisplayBins);
+        strokeWeight(1.5f);
+
+        for (int i = 0; i < n - 1; i++) {
+            float avgVal = (data[i] + data[i+1]) / 2.0f;
+            // avgVal in [0,1]: 1.0=0dB=red, 0.0=-40dB=blue
+            color segColor = lerpColor(lowPowerColor, highPowerColor, avgVal);
+            stroke(segColor);
+
+            float x1 = graphX + (float)i / (numDisplayBins - 1) * graphW;
+            float y1 = graphY + (1.0f - data[i]) * graphH;
+            y1 = constrain(y1, graphY, graphY + graphH);
+
+            float x2 = graphX + (float)(i + 1) / (numDisplayBins - 1) * graphW;
+            float y2 = graphY + (1.0f - data[i+1]) * graphH;
+            y2 = constrain(y2, graphY, graphY + graphH);
+
+            line(x1, y1, x2, y2);
+        }
+    }
+
+    /**
+     * Draw vertical color bar on the right: red (top, 0dB) → blue (bottom, -40dB).
+     */
+    private void drawColorBar() {
+        int barH = graphH;
+        int segments = 128;  // number of gradient steps
+
+        pushStyle();
+        noStroke();
+        for (int i = 0; i < segments; i++) {
+            float frac = (float)i / (segments - 1);  // 0=top(0dB,red), 1=bottom(-40dB,blue)
+            color c = lerpColor(lowPowerColor, highPowerColor, 1.0f - frac);  // frac=0→red, frac=1→blue
+            fill(c);
+            float y0 = graphY + frac * barH;
+            float segH = (barH / (float)segments) + 1;  // +1 to avoid gaps
+            rect(colorBarX, y0, colorBarWidth, segH);
+        }
+
+        // Color bar border
+        noFill();
+        stroke(0);
+        strokeWeight(1);
+        rect(colorBarX, graphY, colorBarWidth, barH);
+
+        // dB labels next to color bar
+        fill(0);
+        textSize(11);
+        textAlign(LEFT, CENTER);
+        float[] dbTicks = {0, -10, -20, -30, -40};
+        for (int i = 0; i < dbTicks.length; i++) {
+            float frac = (dbTicks[i] - dBMin) / (dBMax - dBMin);
+            float ly = graphY + (1.0f - frac) * graphH;
+            // Tick mark
+            stroke(0);
+            strokeWeight(1);
+            line(colorBarX + colorBarWidth, ly, colorBarX + colorBarWidth + 5, ly);
+            // Label
+            noStroke();
+            String label = Integer.toString((int)dbTicks[i]);
+            text(label, colorBarX + colorBarWidth + 7, ly);
+        }
+        popStyle();
+    }
+
+    private void drawLegend() {
+        int legendX = graphX + 6;
+        int legendY = graphY + 6;
+        int swatchW = 20, swatchH = 3;
+
+        pushStyle();
+        textSize(11);
+        textAlign(LEFT, CENTER);
+
+        // Top group
+        stroke(#FF3030);
+        strokeWeight(3);
+        line(legendX, legendY, legendX + swatchW, legendY);
+        fill(0);
+        noStroke();
+        text("Ch Top", legendX + swatchW + 4, legendY);
+
+        // Bottom group
+        stroke(#3080FF);
+        strokeWeight(3);
+        line(legendX, legendY + 14, legendX + swatchW, legendY + 14);
+        fill(0);
+        text("Ch Bot", legendX + swatchW + 4, legendY + 14);
+
+        popStyle();
+    }
+
+    // ============ DASHED LINE HELPER ============
+
     private void drawDashedLine(float x1, float y1, float x2, float y2, color c, float dashLen, float gapLen) {
         stroke(c);
         strokeWeight(1);
@@ -346,60 +419,6 @@ class W_Spectrogram extends Widget {
             pos += segLen;
             drawing = !drawing;
         }
-    }
-
-    private void drawFilledCurve(float[] data, color fillColor, color lineColor, int plotX) {
-        if (data == null || data.length < 2) return;
-
-        float baselineY = graphY + graphH;
-        int n = min(data.length, numDisplayBins);
-
-        // Filled area using QUAD_STRIP
-        noStroke();
-        fill(fillColor);
-        beginShape(QUAD_STRIP);
-        for (int i = 0; i < n; i++) {
-            float px = plotX + (float)i / (numDisplayBins - 1) * halfW;
-            float py = graphY + (1.0f - data[i]) * graphH;
-            py = constrain(py, graphY, graphY + graphH);
-            vertex(px, baselineY);
-            vertex(px, py);
-        }
-        endShape();
-
-        // Outline line
-        noFill();
-        stroke(lineColor);
-        strokeWeight(1.5f);
-        beginShape(LINE_STRIP);
-        for (int i = 0; i < n; i++) {
-            float px = plotX + (float)i / (numDisplayBins - 1) * halfW;
-            float py = graphY + (1.0f - data[i]) * graphH;
-            py = constrain(py, graphY, graphY + graphH);
-            vertex(px, py);
-        }
-        endShape();
-    }
-
-    private void drawSubplotTitles() {
-        pushStyle();
-        textSize(12);
-        textAlign(CENTER, TOP);
-
-        // Left title (Ch Top)
-        fill(topColor);
-        noStroke();
-        rect(leftPlotX + halfW/2 - 30, graphY - 2, 12, 12);
-        fill(0);
-        text("Ch Top", leftPlotX + halfW/2 + 4, graphY);
-
-        // Right title (Ch Bot)
-        fill(botColor);
-        rect(rightPlotX + halfW/2 - 30, graphY - 2, 12, 12);
-        fill(0);
-        text("Ch Bot", rightPlotX + halfW/2 + 4, graphY);
-
-        popStyle();
     }
 
     // ============ SPECTRUM COMPUTATION ============
@@ -511,12 +530,6 @@ class W_Spectrogram extends Widget {
         }
     }
 
-    private void updateCurveColors() {
-        int idx = constrain(currentColorTheme, 0, themeColors.length - 1);
-        topColor = themeColors[idx][0];
-        botColor = themeColors[idx][1];
-    }
-
     // ============ CHANNEL & LAYOUT HELPERS ============
 
     void activateDefaultChannels() {
@@ -546,9 +559,7 @@ class W_Spectrogram extends Widget {
         graphY = y + paddingTop;
         graphW = w - paddingRight - paddingLeft;
         graphH = h - paddingBottom - paddingTop;
-        halfW = (graphW - plotGap) / 2;
-        leftPlotX = graphX;
-        rightPlotX = graphX + halfW + plotGap;
+        colorBarX = graphX + graphW + colorBarGap;
     }
 
     void flexSpectrogramSizeAndPosition() {
@@ -578,6 +589,7 @@ void SpectrogramFreqScale(int n) {
 
 void SpectrogramColormap(int n) {
     settings.spectColormapSave = n;
-    w_spectrogram.currentColorTheme = n;
-    w_spectrogram.updateCurveColors();
+    // Colormap dropdown no longer used for theme selection;
+    // color is now fixed red→blue gradient by power level.
+    // Keeping callback to avoid breaking settings persistence.
 }
