@@ -276,12 +276,12 @@ class W_Spectrogram extends Widget {
             }
         popStyle();
 
-        // Formula annotation (small text, top-right of plot area)
+        // Formula annotation (top-right of plot area)
         pushStyle();
             fill(0);
-            textSize(9);
+            textSize(12);
             textAlign(RIGHT, TOP);
-            text("dB = 10·log₁₀(P) - 10·log₁₀(Pmax)", graphX + graphW - 6, graphY + 4);
+            text("dB = 10 * log10(P / Pmax)", graphX + graphW - 6, graphY + 4);
         popStyle();
     }
 
