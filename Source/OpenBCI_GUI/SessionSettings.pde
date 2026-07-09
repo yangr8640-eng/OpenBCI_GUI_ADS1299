@@ -86,7 +86,6 @@ class SessionSettings {
     int minNumRowsPlaybackFile = int(currentBoard.getSampleRate());
     //Spectrogram Widget settings
     int spectMaxFrqSave;
-    int spectSampleRateSave;
     int spectFreqScaleSave;   // 0=Linear, 1=Mel
     int spectColormapSave;    // 0=Inferno, 1=Jet, 2=Viridis, 3=BlueGreen
 
@@ -144,7 +143,6 @@ class SessionSettings {
 
     //Used to set text in dropdown menus when loading Spectrogram Setings
     String[] spectMaxFrqArray = {"20 Hz", "40 Hz", "60 Hz", "100 Hz", "120 Hz", "250 Hz"};
-    String[] spectSampleRateArray = {"30 Min.", "6 Min.", "3 Min.", "1.5 Min.", "1 Min."};
 
     //Load Accel. dropdown variables
     int loadAccelVertScale;
@@ -175,7 +173,6 @@ class SessionSettings {
     List<Integer> loadSpectActiveChanTop = new ArrayList<Integer>();
     List<Integer> loadSpectActiveChanBot = new ArrayList<Integer>();
     int spectMaxFrqLoad;
-    int spectSampleRateLoad;
     int spectFreqScaleLoad;
     int spectColormapLoad;
 
@@ -462,7 +459,6 @@ class SessionSettings {
         saveSpectrogramSettings.setJSONArray("activeChannelsBot", saveActiveChanSpectBot);
         //Save Spectrogram_Max Freq Setting. The max frq variable is updated every time the user selects a dropdown in the spectrogram widget
         saveSpectrogramSettings.setInt("Spectrogram_Max Freq", spectMaxFrqSave);
-        saveSpectrogramSettings.setInt("Spectrogram_Sample Rate", spectSampleRateSave);
         saveSpectrogramSettings.setInt("Spectrogram_FreqScale", spectFreqScaleSave);
         saveSpectrogramSettings.setInt("Spectrogram_Colormap", spectColormapSave);
         saveSettingsJSONData.setJSONObject(kJSONKeySpectrogram, saveSpectrogramSettings);
@@ -656,7 +652,6 @@ class SessionSettings {
                 loadSpectActiveChanBot.add(loadSpectChanBot.getInt(i));
             }
             spectMaxFrqLoad = loadSpectSettings.getInt("Spectrogram_Max Freq");
-            spectSampleRateLoad = loadSpectSettings.getInt("Spectrogram_Sample Rate");
             spectFreqScaleLoad = loadSpectSettings.getInt("Spectrogram_FreqScale", 0);
             spectColormapLoad = loadSpectSettings.getInt("Spectrogram_Colormap", 0);
             //println(loadSpectActiveChanTop, loadSpectActiveChanBot);
@@ -820,8 +815,6 @@ class SessionSettings {
         //Apply Max Freq dropdown
         SpectrogramMaxFreq(spectMaxFrqLoad);
             w_spectrogram.cp5_widget.getController("SpectrogramMaxFreq").getCaptionLabel().setText(spectMaxFrqArray[spectMaxFrqLoad]);
-        SpectrogramSampleRate(spectSampleRateLoad);
-            w_spectrogram.cp5_widget.getController("SpectrogramSampleRate").getCaptionLabel().setText(spectSampleRateArray[spectSampleRateLoad]);
         SpectrogramFreqScale(spectFreqScaleLoad);
             String[] freqScaleLabels = {"Linear", "Mel"};
             w_spectrogram.cp5_widget.getController("SpectrogramFreqScale").getCaptionLabel().setText(freqScaleLabels[spectFreqScaleLoad]);
