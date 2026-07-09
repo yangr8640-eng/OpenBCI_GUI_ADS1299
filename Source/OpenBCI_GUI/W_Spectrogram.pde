@@ -285,17 +285,48 @@ class W_Spectrogram extends Widget {
     // ============ GRID & CURVE DRAWING ============
 
     private void drawGridLines() {
-        stroke(200, 200, 200);
-        strokeWeight(1);
         float[] dbTicks = {0, -10, -20, -30, -40};
+
+        // Horizontal dashed grid lines at dB ticks
         for (int i = 0; i < dbTicks.length; i++) {
             float frac = (dbTicks[i] - dBMin) / (dBMax - dBMin);
             float gy = graphY + (1.0f - frac) * graphH;
-            for (float gx = graphX; gx <= graphX + graphW; gx += 5) {
-                if ((int)(gx / 5) % 2 == 0) {
-                    point(gx, gy);
-                }
+            drawDashedLine(graphX, gy, graphX + graphW, gy, color(200), 8, 4);
+        }
+
+        // Vertical dashed grid lines at frequency tick positions
+        int numXTicks = 5;
+        for (int i = 0; i < numXTicks; i++) {
+            float frac = (float)i / (numXTicks - 1);
+            float gx = graphX + frac * graphW;
+            drawDashedLine(gx, graphY, gx, graphY + graphH, color(200), 8, 4);
+        }
+    }
+
+    /**
+     * Draw a dashed line from (x1,y1) to (x2,y2).
+     * @param dashLen  length of each dash segment in pixels
+     * @param gapLen   length of each gap between dashes in pixels
+     */
+    private void drawDashedLine(float x1, float y1, float x2, float y2, color c, float dashLen, float gapLen) {
+        stroke(c);
+        strokeWeight(1);
+        float dx = x2 - x1;
+        float dy = y2 - y1;
+        float len = sqrt(dx*dx + dy*dy);
+        if (len < 1) return;
+        float ux = dx / len;
+        float uy = dy / len;
+        boolean drawing = true;
+        float pos = 0;
+        while (pos < len) {
+            float segLen = drawing ? dashLen : gapLen;
+            if (pos + segLen > len) segLen = len - pos;
+            if (drawing) {
+                line(x1 + ux*pos, y1 + uy*pos, x1 + ux*(pos+segLen), y1 + uy*(pos+segLen));
             }
+            pos += segLen;
+            drawing = !drawing;
         }
     }
 
