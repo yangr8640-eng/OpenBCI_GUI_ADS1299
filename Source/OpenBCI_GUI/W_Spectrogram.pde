@@ -4,8 +4,8 @@
 //                  W_Spectrogram.pde               //
 //                                                  //
 //    PSD Plot: X = Frequency (Hz), Y = Power (dB)  //
-//    Gradient-colored curve: red = high power,     //
-//    blue = low power, with color bar on right.    //
+//    Heatmap-style filled area with vertical color  //
+//    gradient — red (0dB) to blue (-40dB).          //
 //                                                  //
 //    Created by: Richard Waltman, September 2019   //
 //    Enhanced: Mel scale + PSD plot, July 2026     //
@@ -161,9 +161,9 @@ class W_Spectrogram extends Widget {
             // Draw grid lines
             drawGridLines();
 
-            // Draw gradient-colored curves (thin lines, color by power)
-            drawGradientCurve(topSpectrum);
-            drawGradientCurve(botSpectrum);
+            // Draw heatmap-style PSD fill for both channel groups
+            drawHeatmapPSD(topSpectrum);
+            drawHeatmapPSD(botSpectrum);
 
             // Draw color bar on the right
             drawColorBar();
@@ -299,31 +299,67 @@ class W_Spectrogram extends Widget {
     }
 
     /**
-     * Draw a gradient-colored curve: each segment's color is determined by
-     * its dB power level — red at 0dB (high power), blue at -40dB (low power).
+     * Draw PSD as a heatmap-style filled area: for each frequency bin,
+     * the area from baseline (-40dB) up to the data value is filled with
+     * a vertical color gradient — red at the top (0dB, high power),
+     * blue at the bottom (-40dB, low power).
+     *
+     * Uses horizontal banding for performance: the plot is split into
+     * ~40 horizontal bands (1 per dB), each drawn with its own color.
      */
-    private void drawGradientCurve(float[] data) {
+    private void drawHeatmapPSD(float[] data) {
         if (data == null || data.length < 2) return;
 
         int n = min(data.length, numDisplayBins);
-        strokeWeight(1.5f);
+        float baselineY = graphY + graphH;
 
-        for (int i = 0; i < n - 1; i++) {
-            float avgVal = (data[i] + data[i+1]) / 2.0f;
-            // avgVal in [0,1]: 1.0=0dB=red, 0.0=-40dB=blue
-            color segColor = lerpColor(lowPowerColor, highPowerColor, avgVal);
-            stroke(segColor);
+        int bands = 40;   // one band per dB
+        float bandH = graphH / (float)bands;
 
-            float x1 = graphX + (float)i / (numDisplayBins - 1) * graphW;
-            float y1 = graphY + (1.0f - data[i]) * graphH;
-            y1 = constrain(y1, graphY, graphY + graphH);
+        for (int band = 0; band < bands; band++) {
+            float bandY = graphY + (band + 0.5f) * bandH;  // center of this band
+            // band 0 = top (red, near 0dB), band 39 = bottom (blue, near -40dB)
+            float frac = (float)band / (float)(bands - 1);
+            color bandColor = lerpColor(lowPowerColor, highPowerColor, 1.0f - frac);
 
-            float x2 = graphX + (float)(i + 1) / (numDisplayBins - 1) * graphW;
-            float y2 = graphY + (1.0f - data[i+1]) * graphH;
-            y2 = constrain(y2, graphY, graphY + graphH);
+            stroke(bandColor);
+            strokeWeight(max(1.0f, bandH + 0.5f));
 
-            line(x1, y1, x2, y2);
+            // Draw horizontal line segments across freq bins above this band
+            boolean drawing = false;
+            float segStart = 0;
+            for (int i = 0; i < n; i++) {
+                float px = graphX + (float)i / (numDisplayBins - 1) * graphW;
+                float dataY = graphY + (1.0f - data[i]) * graphH;
+                dataY = constrain(dataY, graphY, baselineY);
+                boolean above = (dataY <= bandY);
+
+                if (above && !drawing) {
+                    segStart = px;
+                    drawing = true;
+                } else if (!above && drawing) {
+                    line(segStart, bandY, px, bandY);
+                    drawing = false;
+                }
+            }
+            if (drawing) {
+                float lastX = graphX + (float)(n - 1) / (numDisplayBins - 1) * graphW;
+                line(segStart, bandY, lastX, bandY);
+            }
         }
+
+        // Subtle outline curve on top of the heatmap fill
+        noFill();
+        stroke(0, 80);
+        strokeWeight(1.2f);
+        beginShape(LINE_STRIP);
+        for (int i = 0; i < n; i++) {
+            float px = graphX + (float)i / (numDisplayBins - 1) * graphW;
+            float py = graphY + (1.0f - data[i]) * graphH;
+            py = constrain(py, graphY, baselineY);
+            vertex(px, py);
+        }
+        endShape();
     }
 
     /**
