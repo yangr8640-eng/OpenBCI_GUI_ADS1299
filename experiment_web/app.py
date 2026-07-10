@@ -9,7 +9,7 @@ Serves the experiment page and provides REST endpoints for:
 Usage:
     pip install flask
     python app.py
-    # Open http://localhost:5000 in a browser
+    # Open http://localhost:8080 in a browser
 """
 
 from __future__ import annotations
@@ -195,7 +195,7 @@ if __name__ == "__main__":
     print(f"  GUI Control: {'CONNECTED' if gui else 'NOT CONNECTED'}")
     print(f"  Data Dir:    {EXPERIMENT_CONFIG['data_dir']}")
     print()
-    print("  Open http://localhost:5000 in your browser to start.")
+    print("  Open http://localhost:8080 in your browser to start.")
     print("  Press Ctrl+C to stop the server.")
     print()
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    app.run(host="127.0.0.1", port=8080, debug=False)

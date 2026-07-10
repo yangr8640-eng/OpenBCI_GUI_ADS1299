@@ -15,8 +15,8 @@ else
 fi
 
 echo "Starting MIST EEG Experiment Web Server..."
-echo "Open http://localhost:5000 in your browser."
+echo "Open http://localhost:8080 in your browser."
 echo ""
 
-open http://localhost:5000 2>/dev/null &
+open http://localhost:8080 2>/dev/null &
 python app.py

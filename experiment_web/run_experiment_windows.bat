@@ -1,6 +1,6 @@
 @echo off
 REM Run the MIST EEG Experiment (Web Version)
-REM Start the Flask server, then open http://localhost:5000 in your browser.
+REM Start the Flask server, then open http://localhost:8080 in your browser.
 REM Prerequisites: Python 3.10+ installed
 REM Start OpenBCI GUI first for automatic recording.
 
@@ -17,8 +17,8 @@ if not exist "venv\Scripts\python.exe" (
 
 echo.
 echo Starting MIST EEG Experiment Web Server...
-echo Open http://localhost:5000 in your browser.
+echo Open http://localhost:8080 in your browser.
 echo.
-start http://localhost:5000
+start http://localhost:8080
 python app.py
 pause
