@@ -1,0 +1,371 @@
+/* ============================ MIST EEG Experiment — Styles ============================ */
+
+:root {
+  --bg: #f4f7fb;
+  --text: #172033;
+  --muted: #5f6b7a;
+  --blue: #1f6feb;
+  --red: #c73535;
+  --green: #248a3d;
+  --dark: #101827;
+  --card: #ffffff;
+  --card-border: #d9e2ef;
+  --input-bg: #f8fafc;
+  --input-border: #b9c5d4;
+  --progress-bg: #e4ebf5;
+  --skip-bg: #fff4e6;
+  --skip-border: #f0b66a;
+  --skip-text: #9a5b00;
+  --radius: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  color: var(--text);
+  background: var(--bg);
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ---- Layout ---- */
+
+.screen {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.card-large { width: min(680px, 90vw); }
+
+.card-header {
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 18px 28px;
+}
+.card-header h1 { font-size: 1.3rem; font-weight: 700; }
+
+.card-header.accent-blue { background: var(--blue); color: #fff; }
+.card-header.accent-green { background: var(--green); color: #fff; }
+.card-header.accent-red { background: var(--red); color: #fff; }
+
+.card-body { padding: 28px; }
+
+.text-center { text-align: center; }
+.text-center p { margin: 6px 0; line-height: 1.7; }
+
+.muted { color: var(--muted); }
+.hint { font-size: 0.85rem; color: var(--muted); }
+
+.card-footer {
+  padding: 14px 28px 20px;
+  text-align: center;
+}
+
+kbd {
+  display: inline-block;
+  padding: 2px 7px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  color: var(--dark);
+  background: var(--input-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 4px;
+}
+
+/* ---- Skip Hint ---- */
+
+.skip-hint {
+  position: fixed; top: 14px; right: 18px;
+  padding: 5px 14px;
+  font-size: 0.8rem; font-weight: 700;
+  color: var(--skip-text);
+  background: var(--skip-bg);
+  border: 1px solid var(--skip-border);
+  border-radius: 4px;
+  z-index: 100;
+}
+
+/* ---- Form ---- */
+
+.form-group { margin-bottom: 16px; }
+.form-group > label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 5px;
+  color: var(--text);
+}
+
+.form-group input[type="text"] {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 1rem;
+  font-family: inherit;
+  color: var(--blue);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  outline: none;
+}
+.form-group input[type="text"]:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px rgba(31,111,235,0.15);
+}
+
+.radio-group { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.radio-label {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 0.9rem; cursor: pointer;
+}
+
+/* ---- Stage Header ---- */
+
+.stage-header {
+  position: fixed; top: 0; left: 0; right: 0;
+  padding: 10px 24px 8px;
+  border-radius: 0;
+  z-index: 50;
+}
+
+.stage-header-inner {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 6px;
+}
+
+.stage-title { font-size: 0.95rem; font-weight: 700; }
+.stage-countdown { font-size: 0.95rem; color: var(--muted); }
+
+.progress-bar-bg {
+  width: 100%; height: 6px;
+  background: var(--progress-bg);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%; border-radius: 3px;
+  transition: width 0.15s linear;
+}
+
+.progress-blue { background: var(--blue); }
+.progress-red { background: var(--red); }
+
+/* ---- Rest Screen ---- */
+
+.rest-content {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 16px;
+  margin-top: 40px;
+}
+
+.fixation-cross {
+  font-size: 4.5rem; font-weight: 700;
+  color: var(--dark);
+  line-height: 1;
+}
+
+.rest-instruction {
+  font-size: 1.15rem;
+  color: var(--text);
+  max-width: 520px; text-align: center;
+}
+
+.rest-timer-large {
+  font-size: 2.5rem; font-weight: 700;
+  color: var(--blue);
+}
+
+.rest-muted {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.fixation-standalone {
+  font-size: 5rem; font-weight: 700;
+  color: var(--muted);
+}
+
+/* ---- Math Screen ---- */
+
+.stress-panel {
+  position: fixed; top: 68px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; gap: 12px;
+  z-index: 40;
+}
+
+.stat-box {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  padding: 8px 18px;
+  text-align: center;
+  min-width: 100px;
+}
+
+.stat-label { font-size: 0.72rem; color: var(--muted); margin-bottom: 2px; }
+.stat-value { font-size: 1.2rem; font-weight: 700; }
+.stat-blue { color: var(--blue); }
+.stat-red { color: var(--red); }
+
+.nonstress-hint {
+  margin-top: 76px;
+  font-size: 0.88rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.math-card {
+  width: min(520px, 88vw);
+  margin-top: 16px;
+  padding: 24px;
+  text-align: center;
+}
+
+.expression {
+  font-size: 2.2rem; font-weight: 700;
+  color: var(--dark);
+  margin-bottom: 18px;
+}
+
+.answer-box {
+  display: inline-block;
+  min-width: 120px;
+  padding: 8px 20px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.answer-text {
+  font-size: 1.3rem; font-weight: 700;
+  color: var(--blue);
+}
+
+.cursor-blink {
+  font-size: 1.3rem; color: var(--blue);
+  animation: blink 0.8s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+.deadline-area {
+  width: min(400px, 70vw);
+  margin-top: 20px;
+  text-align: center;
+}
+
+.deadline-bar-bg { height: 10px; margin-bottom: 6px; }
+
+/* ---- Feedback ---- */
+
+.feedback-overlay {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+}
+
+.feedback-card {
+  width: min(420px, 80vw);
+  padding: 40px 28px;
+  text-align: center;
+}
+
+.feedback-text {
+  font-size: 1.5rem; font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.feedback-detail { font-size: 0.95rem; }
+
+/* ---- VAS ---- */
+
+.vas-title {
+  font-size: 1.15rem; font-weight: 700;
+  margin-bottom: 24px;
+}
+
+.vas-scale {
+  display: flex; align-items: center; gap: 14px;
+  margin-bottom: 16px;
+}
+
+.vas-end-label {
+  font-size: 0.8rem; font-weight: 700;
+  text-align: center; line-height: 1.4;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.vas-bar-container {
+  position: relative;
+  flex: 1;
+  height: 60px;
+  display: flex; align-items: center;
+  cursor: pointer;
+}
+
+.vas-bar {
+  position: relative;
+  width: 100%; height: 8px;
+  background: var(--muted);
+  border-radius: 4px;
+}
+
+.vas-ticks {
+  position: absolute; top: -8px; left: 0;
+  width: 100%; height: 24px;
+}
+
+.vas-marker {
+  position: absolute; top: -16px;
+  width: 18px; height: 18px;
+  background: var(--blue);
+  border: 3px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  transform: translateX(-50%);
+}
+
+.vas-value {
+  font-size: 1.3rem; font-weight: 700;
+  color: var(--blue);
+  min-height: 30px;
+}
+
+/* ---- End / Abort ---- */
+
+#end-csv-path, #abort-csv-path {
+  font-size: 0.85rem;
+}
+
+/* ---- Responsive ---- */
+
+@media (max-width: 600px) {
+  .card-large { width: 95vw; }
+  .card-body { padding: 18px; }
+  .card-header { padding: 14px 18px; }
+  .card-header h1 { font-size: 1.1rem; }
+  .expression { font-size: 1.6rem; }
+  .rest-timer-large { font-size: 2rem; }
+  .fixation-cross { font-size: 3.5rem; }
+  .stress-panel { gap: 6px; }
+  .stat-box { padding: 6px 10px; min-width: 70px; }
+  .stat-value { font-size: 1rem; }
+}
