@@ -1151,6 +1151,10 @@ public void updateToNChan(int _nchan) {
     nchan = _nchan;
     settings.slnchan = _nchan; //used in SoftwareSettings.pde only
     fftBuff = new ddf.minim.analysis.FFT[nchan];  //reinitialize the FFT buffer
+    // Keep the spectrogram FFT buffer in sync with the active channel count.
+    // Without this, a switch from the 8-channel startup default to a 16-channel
+    // source (such as the ADS1299 TCP board) overflows during session startup.
+    fftBuffSpectrogram = new ddf.minim.analysis.FFT[nchan];
     println("OpenBCI_GUI: Channel count set to " + str(nchan));
 }
 
