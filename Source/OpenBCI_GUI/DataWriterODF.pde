@@ -6,12 +6,23 @@ public class DataWriterODF {
     protected String fileNamePrependString = "OpenBCI-RAW-";
     protected String headerFirstLineString = "%OpenBCI Raw EXG Data";
 
-    //variation on constructor to have custom name
+    // Standard constructor: uses "OpenBCI-RAW-<fileName>.txt" pattern
     DataWriterODF(String _sessionName, String _fileName) {
+        this(_sessionName, _fileName, false);
+    }
+
+    // Extended constructor: when useAsCompleteName is true, _fileName is the complete
+    // file base name (no "OpenBCI-RAW-" prefix). Used by ExperimentControlServer for
+    // custom stage-based file naming like "SUB01-eyes_open-RAW.txt".
+    DataWriterODF(String _sessionName, String _fileName, boolean useAsCompleteName) {
         settings.setSessionPath(directoryManager.getRecordingsPath() + "OpenBCISession_" + _sessionName + File.separator);
         fname = settings.getSessionPath();
-        fname += fileNamePrependString;
-        fname += _fileName;
+        if (useAsCompleteName) {
+            fname += _fileName;
+        } else {
+            fname += fileNamePrependString;
+            fname += _fileName;
+        }
         fname += ".txt";
         output = createWriter(fname);        //open the file
         writeHeader();    //add the header

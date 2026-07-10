@@ -1,9 +1,22 @@
 class DirectoryManager {
 
-    private final String guiDataPath = "D:"+File.separator+"OpenBCI_GUI_ADS1299"+File.separator+"UserData"+File.separator;
+    // Use a platform-appropriate base path for user data.
+    // On Windows the original hardcoded D: drive is retained; on macOS/Linux
+    // the sketch directory is used as the base.
+    private final String guiDataPath = getPlatformDataPath();
     private final String recordingsPath = guiDataPath+"Recordings"+File.separator;
     private final String settingsPath = guiDataPath+"Settings"+File.separator;
     private final String consoleDataPath = guiDataPath+"Console_Data"+File.separator;
+
+    private String getPlatformDataPath() {
+        String os = System.getProperty("os.name").toLowerCase();
+        if (os.contains("win")) {
+            return "D:" + File.separator + "OpenBCI_GUI_ADS1299" + File.separator + "UserData" + File.separator;
+        } else {
+            // macOS / Linux: use sketch directory as base
+            return sketchPath("") + File.separator + "UserData" + File.separator;
+        }
+    }
     private final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss");
 
     DirectoryManager() {

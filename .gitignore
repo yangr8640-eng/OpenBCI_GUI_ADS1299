@@ -3,20 +3,31 @@ UserData/Recordings/
 UserData/Console_Data/
 UserData/Processed_Data/
 UserData/PlaybackHistory/
+Source/OpenBCI_GUI/UserData/
 
 # Build outputs and local checks
 build_check/
 Source/build_check/
 *.class
 
+# Exported standalone applications (platform-specific, ~300MB each)
+App/
+App 2/
+
 # Downloaded installers and local Processing runtime
 downloads/
 Processing-3.5.4/
 
+# Code review graph database (large, machine-specific)
+.code-review-graph/
+Source/.code-review-graph/
+Source/OpenBCI_GUI/.code-review-graph/
+
 # Nested repository metadata from the source checkout
 Source/.git/
 
-# Python caches and generated analysis outputs
+# Python virtual environment and caches
+venv/
 __pycache__/
 *.py[cod]
 AnalysisTools/__pycache__/

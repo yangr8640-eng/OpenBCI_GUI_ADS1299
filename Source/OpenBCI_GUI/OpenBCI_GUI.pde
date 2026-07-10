@@ -123,6 +123,10 @@ DataSource currentBoard = new BoardNull();
 
 DataLogger dataLogger = new DataLogger();
 
+// Experiment Control Server — accepts TCP commands from the MIST experiment
+// to start/stop recording with custom file names per stage.
+ExperimentControlServer expControlServer;
+
 // Intialize interface protocols
 InterfaceSerial iSerial = new InterfaceSerial(); //This is messy, half-deprecated code. See comments in InterfaceSerial.pde - Nov. 2020
 String openBCI_portName = "N/A";  //starts as N/A but is selected from control panel to match your OpenBCI USB Dongle's serial/COM
@@ -498,6 +502,11 @@ void delayedSetup() {
     //Apply GUI-wide settings to front end at the end of setup
     guiSettings.applySettings();
 
+    // Start the Experiment Control TCP server so the MIST experiment can
+    // remotely start/stop recordings with custom stage-based file names.
+    expControlServer = new ExperimentControlServer(1236);
+    expControlServer.start();
+
     if (!isAdminUser() || isElevationNeeded()) {
         outputError("OpenBCI_GUI: This application is not being run with Administrator access. This could limit the ability to connect to devices or read/write files.");
     }
@@ -525,6 +534,10 @@ synchronized void draw() {
         }
         if (systemMode == SYSTEMMODE_POSTINIT) {
             w_networking.compareAndSetNetworkingFrameLocks();
+        }
+        // Process any queued commands from the experiment control server
+        if (expControlServer != null) {
+            expControlServer.checkCommands();
         }
     } else if (systemMode == SYSTEMMODE_INTROANIMATION) {
         if (settings.introAnimationInit == 0) {
@@ -841,6 +854,37 @@ void stopRunning() {
         }
     } else {
         output("Data stream is already stopped.");
+    }
+}
+
+// ---- Experiment Control (called by ExperimentControlServer on the main thread) ----
+
+/**
+ * Start recording with a custom stage-based file name.
+ * Called by ExperimentControlServer when the MIST experiment sends a RECORD:<name> command.
+ * Stops any current recording first, sets the recording name, then starts a new stream.
+ */
+void experimentControlStartRecording(String name) {
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping current recording before starting '" + name + "'");
+        stopRunning();
+        delay(150);  // Allow file to flush and close cleanly
+    }
+    dataLogger.setRecordingName(name);
+    startRunning();
+    println("ExpCtrl: Recording started for '" + name + "'");
+}
+
+/**
+ * Stop any current recording.
+ * Called by ExperimentControlServer when the MIST experiment sends a STOP command.
+ */
+void experimentControlStopRecording() {
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping recording");
+        stopRunning();
+    } else {
+        println("ExpCtrl: Not currently recording, STOP ignored");
     }
 }
 

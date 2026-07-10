@@ -9,6 +9,7 @@ class DataLogger {
     public final int OUTPUT_SOURCE_ODF = 1; // The OpenBCI CSV Data Format
     public final int OUTPUT_SOURCE_BDF = 2; // The BDF data format http://www.biosemi.com/faq/file_format.htm
     private int outputDataSource;
+    private String customRecordingName = null;  // Set by ExperimentControlServer for custom file naming
 
     DataLogger() {
         //Default to OpenBCI CSV Data Format
@@ -63,6 +64,27 @@ class DataLogger {
             openNewLogFile(directoryManager.getFileNameDateTime());
             settings.setLogFileStartTime(System.nanoTime());
         }
+    }
+
+    /**
+     * Set a custom recording name for the next log file.
+     * Called by ExperimentControlServer to produce files like "SUB01-eyes_open-RAW.txt"
+     * instead of the default "OpenBCI-RAW-<timestamp>.txt".
+     */
+    public void setRecordingName(String name) {
+        customRecordingName = name;
+        setSessionName(name);
+        // Update session path so the folder is also named after the stage
+        StringBuilder sb = new StringBuilder(directoryManager.getRecordingsPath());
+        sb.append("OpenBCISession_");
+        sb.append(name);
+        sb.append(File.separator);
+        settings.setSessionPath(sb.toString());
+        println("DataLogger: Recording name set to '" + name + "'");
+    }
+
+    public String getRecordingName() {
+        return customRecordingName;
     }
 
     public void onStartStreaming() {
@@ -144,12 +166,25 @@ class DataLogger {
             println("OpenBCI_GUI: closing log file");
             closeLogFile();
         }
-        //open the new file
-        fileWriterODF = new DataWriterODF(sessionName, _fileName);
-        if (currentBoard instanceof AuxDataBoard) {
-            if (fileWriterAuxODF != null)
-                fileWriterAuxODF.closeFile();
-            fileWriterAuxODF = new DataWriterAuxODF(sessionName, _fileName);
+        // Use custom recording name if set (from ExperimentControlServer), otherwise
+        // fall back to the standard "OpenBCI-RAW-<timestamp>" pattern.
+        if (customRecordingName != null) {
+            println("DataLogger: Using custom recording name: " + customRecordingName);
+            fileWriterODF = new DataWriterODF(sessionName, customRecordingName, true);
+            if (currentBoard instanceof AuxDataBoard) {
+                if (fileWriterAuxODF != null)
+                    fileWriterAuxODF.closeFile();
+                fileWriterAuxODF = new DataWriterAuxODF(sessionName, customRecordingName, true);
+            }
+            customRecordingName = null;  // consume once
+        } else {
+            //open the new file with standard naming
+            fileWriterODF = new DataWriterODF(sessionName, _fileName);
+            if (currentBoard instanceof AuxDataBoard) {
+                if (fileWriterAuxODF != null)
+                    fileWriterAuxODF.closeFile();
+                fileWriterAuxODF = new DataWriterAuxODF(sessionName, _fileName);
+            }
         }
 
         output_fname = fileWriterODF.fname;

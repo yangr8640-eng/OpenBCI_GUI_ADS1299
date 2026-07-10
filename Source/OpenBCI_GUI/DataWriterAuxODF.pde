@@ -2,9 +2,14 @@ public class DataWriterAuxODF extends DataWriterODF {
     protected String fileNamePrependString = "OpenBCI-RAW-Aux-";
     protected String headerFirstLineString = "%OpenBCI Raw Aux Data";
 
-    //variation on constructor to have custom name
+    // Standard constructor: uses "OpenBCI-RAW-Aux-<fileName>.txt" pattern
     DataWriterAuxODF(String _sessionName, String _fileName) {
         super(_sessionName, _fileName);
+    }
+
+    // Extended constructor: when useAsCompleteName is true, _fileName is the complete name
+    DataWriterAuxODF(String _sessionName, String _fileName, boolean useAsCompleteName) {
+        super(_sessionName, _fileName, useAsCompleteName);
     }
     
     protected int getNumberOfChannels() {
