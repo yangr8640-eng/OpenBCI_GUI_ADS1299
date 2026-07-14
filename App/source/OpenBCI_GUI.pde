@@ -394,6 +394,13 @@ void setup() {
     }
     
     directoryManager = new DirectoryManager();
+    if (!directoryManager.init()) {
+        showStartupError = true;
+        startupErrorMessage = "OpenBCI GUI could not create its data directory.\n\n" +
+            directoryManager.getGuiDataPath() + "\n\n" +
+            "Set OPENBCI_GUI_DATA_DIR to a writable directory and relaunch the application.";
+        return;
+    }
 
     // redirect all output to a custom stream that will intercept all prints
     // write them to file and display them in the GUI's console window
@@ -428,8 +435,6 @@ void setup() {
     println("Welcome to the Processing-based OpenBCI GUI!"); //Welcome line.
     println("For more information, please visit: https://docs.openbci.com/Software/OpenBCISoftware/GUIDocs/");
     
-    // Copy sample data to the Users' Documents folder +  create Recordings folder
-    directoryManager.init();
     settings = new SessionSettings();
     guiSettings = new GuiSettings(directoryManager.getSettingsPath());
     userPlaybackHistoryFile = directoryManager.getSettingsPath()+"UserPlaybackHistory.json";

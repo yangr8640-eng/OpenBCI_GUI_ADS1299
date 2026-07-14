@@ -132,10 +132,22 @@ python tools\ads129x_fake_sender.py --host 127.0.0.1 --port 1234 --rate 250 --ba
 GUI 默认把数据和配置写到：
 
 ```text
-D:\OpenBCI_GUI_ADS1299\UserData
+%LOCALAPPDATA%\OpenBCI_GUI_ADS1299\UserData
 ```
 
-如果把项目放在其他路径，可以根据需要修改 `Source\OpenBCI_GUI\DirectoryManager.pde` 里的 `guiDataPath`，然后重新运行或重新导出应用。
+如果旧版的 `D:\OpenBCI_GUI_ADS1299\UserData` 已经存在，程序会继续使用该目录，避免已有设置和录制数据迁移后丢失。
+
+如果需要把录制和配置保存到其他磁盘，请设置用户环境变量 `OPENBCI_GUI_DATA_DIR`。例如保存到 O 盘：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+    "OPENBCI_GUI_DATA_DIR",
+    "O:\OpenBCI_GUI_ADS1299\UserData",
+    "User"
+)
+```
+
+设置后需要退出并重新启动 GUI。程序启动时会自动创建 `Recordings`、`Settings`、`Console_Data` 和 `Sample_Data` 子目录，不再依赖固定的 `D:` 盘符。
 
 仓库不会保存个人录制数据。需要共享实验数据时，请单独整理脱敏后的数据文件，并避免把几十 GB 的原始录制直接提交进 Git。
 

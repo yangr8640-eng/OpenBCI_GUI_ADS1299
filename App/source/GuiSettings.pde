@@ -106,13 +106,13 @@ class GuiSettings {
             final File file = new File(filename);
             final File parent_directory = file.getParentFile();
 
-            if (null != parent_directory)
-            {
-                parent_directory.mkdirs();
+            if (parent_directory != null && !parent_directory.isDirectory() &&
+                !parent_directory.mkdirs() && !parent_directory.isDirectory()) {
+                throw new IOException("Unable to create settings directory: " + parent_directory.getAbsolutePath());
             }
         } catch (Exception e) {
             e.printStackTrace();
-            outputWarn("OpenBCI_GUI::Settings: Error creating /Documents/OpenBCI_GUI/Settings/ folder. Please make an issue on GitHub.");
+            outputWarn("OpenBCI_GUI::Settings: Error creating GUI settings folder: " + filename);
             return false;
         }
  

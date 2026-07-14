@@ -541,6 +541,13 @@ public void setup() {
     }
     
     directoryManager = new DirectoryManager();
+    if (!directoryManager.init()) {
+        showStartupError = true;
+        startupErrorMessage = "OpenBCI GUI could not create its data directory.\n\n" +
+            directoryManager.getGuiDataPath() + "\n\n" +
+            "Set OPENBCI_GUI_DATA_DIR to a writable directory and relaunch the application.";
+        return;
+    }
 
     // redirect all output to a custom stream that will intercept all prints
     // write them to file and display them in the GUI's console window
@@ -575,8 +582,6 @@ public void setup() {
     println("Welcome to the Processing-based OpenBCI GUI!"); //Welcome line.
     println("For more information, please visit: https://docs.openbci.com/Software/OpenBCISoftware/GUIDocs/");
     
-    // Copy sample data to the Users' Documents folder +  create Recordings folder
-    directoryManager.init();
     settings = new SessionSettings();
     guiSettings = new GuiSettings(directoryManager.getSettingsPath());
     userPlaybackHistoryFile = directoryManager.getSettingsPath()+"UserPlaybackHistory.json";
@@ -12667,7 +12672,11 @@ public void output(String _output) {
 }
 
 public void output(String _output, OutputLevel level) {
-    helpWidget.output(_output, level);
+    if (helpWidget != null) {
+        helpWidget.output(_output, level);
+    } else {
+        println("[" + level.name() + "]: " + _output);
+    }
 }
 
 public void outputError(String _output) {
@@ -12717,14 +12726,38 @@ interface DigitalCapableBoard {
 };
 class DirectoryManager {
 
-    private final String guiDataPath = "D:"+File.separator+"OpenBCI_GUI_ADS1299"+File.separator+"UserData"+File.separator;
-    private final String recordingsPath = guiDataPath+"Recordings"+File.separator;
-    private final String settingsPath = guiDataPath+"Settings"+File.separator;
-    private final String consoleDataPath = guiDataPath+"Console_Data"+File.separator;
+    private final String guiDataPath;
+    private final String recordingsPath;
+    private final String settingsPath;
+    private final String consoleDataPath;
     private final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss");
 
     DirectoryManager() {
+        String configuredPath = System.getenv("OPENBCI_GUI_DATA_DIR");
 
+        if (configuredPath == null || configuredPath.trim().isEmpty()) {
+            File legacyDataDirectory = new File(
+                "D:" + File.separator + "OpenBCI_GUI_ADS1299" + File.separator + "UserData"
+            );
+            if (legacyDataDirectory.isDirectory()) {
+                configuredPath = legacyDataDirectory.getAbsolutePath();
+            } else {
+                String localAppData = System.getenv("LOCALAPPDATA");
+                if (localAppData == null || localAppData.trim().isEmpty()) {
+                    localAppData = System.getProperty("user.home");
+                }
+
+                configuredPath = new File(
+                    localAppData,
+                    "OpenBCI_GUI_ADS1299" + File.separator + "UserData"
+                ).getAbsolutePath();
+            }
+        }
+
+        guiDataPath = new File(configuredPath).getAbsolutePath() + File.separator;
+        recordingsPath = guiDataPath + "Recordings" + File.separator;
+        settingsPath = guiDataPath + "Settings" + File.separator;
+        consoleDataPath = guiDataPath + "Console_Data" + File.separator;
     }
 
     public String getFileNameDateTime() {
@@ -12747,12 +12780,26 @@ class DirectoryManager {
         return consoleDataPath;
     }
 
-    public void init() {
-        // Create GUI data folder and copy sample data if it doesn't already exist
-        String directoryName = guiDataPath + File.separator + "Sample_Data" + File.separator;
+    public boolean init() {
+        String directoryName = guiDataPath + "Sample_Data" + File.separator;
+        File directory = new File(directoryName);
+        File[] requiredDirectories = {
+            new File(guiDataPath),
+            new File(recordingsPath),
+            new File(settingsPath),
+            new File(consoleDataPath),
+            directory
+        };
+
+        for (File requiredDirectory : requiredDirectories) {
+            if (!ensureDirectory(requiredDirectory)) {
+                println("OpenBCI_GUI::Setup: Unable to create data directory: " + requiredDirectory.getAbsolutePath());
+                return false;
+            }
+        }
+
         String guiv4fileName = directoryName + "OpenBCI-sampleData-2-meditation.txt";
         String guiv5fileName = directoryName + "OpenBCI_GUI-v5-meditation.txt";
-        File directory = new File(directoryName);
         File guiv4_fileToCheck = new File(guiv4fileName);
         File guiv5_fileToCheck = new File(guiv5fileName);
 
@@ -12774,16 +12821,18 @@ class DirectoryManager {
             println("OpenBCI_GUI::Setup: GUI v5 Sample Data exists.");
         }
 
-        makeRecordingsFolder();
+        return true;
     }
 
     private void copySampleDataFiles(File directory, String directoryName) {
         println("OpenBCI_GUI::Setup: Copying sample data to " + guiDataPath + "Sample_Data");
-        // Make the entire directory path including parents
-        directory.mkdirs();
         try {
             File[] filesFound = new File(dataPath("EEG_Sample_Data")).listFiles();
-            //If this pathname does not denote a directory, then listFiles() returns null.
+            if (filesFound == null) {
+                println("OpenBCI_GUI::Setup: Bundled sample data directory is missing or inaccessible.");
+                return;
+            }
+
             for (File file : filesFound) {
                 if (file.isFile()) {
                     Files.copy(file.toPath(),
@@ -12796,13 +12845,8 @@ class DirectoryManager {
         }
     }
 
-    private void makeRecordingsFolder() {
-        //Create GUI Recordings folder if it doesn't exist
-        String recordingDirString = guiDataPath + File.separator + "Recordings";
-        File recDirectory = new File(recordingDirString);
-        if (recDirectory.mkdir()) {
-            println("OpenBCI_GUI::Setup: Created " + recordingDirString);
-        }
+    private boolean ensureDirectory(File directory) {
+        return directory.isDirectory() || directory.mkdirs() || directory.isDirectory();
     }
     
 };
@@ -16665,13 +16709,13 @@ class GuiSettings {
             final File file = new File(filename);
             final File parent_directory = file.getParentFile();
 
-            if (null != parent_directory)
-            {
-                parent_directory.mkdirs();
+            if (parent_directory != null && !parent_directory.isDirectory() &&
+                !parent_directory.mkdirs() && !parent_directory.isDirectory()) {
+                throw new IOException("Unable to create settings directory: " + parent_directory.getAbsolutePath());
             }
         } catch (Exception e) {
             e.printStackTrace();
-            outputWarn("OpenBCI_GUI::Settings: Error creating /Documents/OpenBCI_GUI/Settings/ folder. Please make an issue on GitHub.");
+            outputWarn("OpenBCI_GUI::Settings: Error creating GUI settings folder: " + filename);
             return false;
         }
  
