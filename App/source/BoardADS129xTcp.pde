@@ -6,6 +6,7 @@ import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.ImmutablePair;
@@ -29,6 +30,7 @@ class BoardADS129xTcp extends Board {
     private final int[] exgChannels = new int[NUM_EXG_CHANNELS];
     private final boolean[] activeChannels = new boolean[NUM_EXG_CHANNELS];
     private final ConcurrentLinkedQueue<double[]> sampleQueue = new ConcurrentLinkedQueue<double[]>();
+    private final AtomicInteger queuedSampleCount = new AtomicInteger(0);
     private final ConcurrentLinkedQueue<String> warningQueue = new ConcurrentLinkedQueue<String>();
     private final ADS129xTcpParser parser = new ADS129xTcpParser();
 
@@ -97,6 +99,7 @@ class BoardADS129xTcp extends Board {
             serverThread = null;
         }
         sampleQueue.clear();
+        queuedSampleCount.set(0);
         connected = false;
     }
 
@@ -104,6 +107,7 @@ class BoardADS129xTcp extends Board {
     public void startStreaming() {
         super.startStreaming();
         sampleQueue.clear();
+        queuedSampleCount.set(0);
         warningQueue.clear();
         synchronized(parser) {
             parser.reset();
@@ -124,6 +128,7 @@ class BoardADS129xTcp extends Board {
         super.stopStreaming();
         streaming = false;
         sampleQueue.clear();
+        queuedSampleCount.set(0);
     }
 
     @Override
@@ -143,6 +148,7 @@ class BoardADS129xTcp extends Board {
         List<double[]> samples = new ArrayList<double[]>();
         double[] row = sampleQueue.poll();
         while (row != null) {
+            queuedSampleCount.decrementAndGet();
             samples.add(row);
             row = sampleQueue.poll();
         }
@@ -336,9 +342,10 @@ class BoardADS129xTcp extends Board {
             row[MARKER_CHANNEL] = pendingMarker;
             pendingMarker = 0.0;
             sampleQueue.add(row);
+            queuedSampleCount.incrementAndGet();
             outputSampleCounter++;
-            trimQueueIfNeeded();
         }
+        trimQueueIfNeeded();
     }
 
     private void trackFrameSequence(long sequence) {
@@ -355,9 +362,13 @@ class BoardADS129xTcp extends Board {
 
     private void trimQueueIfNeeded() {
         int maxQueuedSamples = max(sampleRate * 10, sampleRate);
-        if (sampleQueue.size() > maxQueuedSamples) {
-            while (sampleQueue.size() > maxQueuedSamples) {
-                sampleQueue.poll();
+        if (queuedSampleCount.get() > maxQueuedSamples) {
+            while (queuedSampleCount.get() > maxQueuedSamples) {
+                if (sampleQueue.poll() == null) {
+                    queuedSampleCount.set(0);
+                    break;
+                }
+                queuedSampleCount.decrementAndGet();
             }
             if (!queueOverflowWarned) {
                 warningQueue.add("ADS1299 sample queue overflow; old samples were dropped.");
@@ -373,7 +384,7 @@ class BoardADS129xTcp extends Board {
     }
 
     private boolean isSupportedSampleRate(int rate) {
-        return rate == 250 || rate == 500 || rate == 1000;
+        return rate == 250 || rate == 500 || rate == 1000 || rate == 2000;
     }
 
     private void closeServerSocket() {

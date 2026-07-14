@@ -151,6 +151,9 @@ CytonSDMode cyton_sdSetting = CytonSDMode.NO_WRITE;
 // The sampling rate should be ideally a multiple of 25, so as to make actual buffer update rate exactly 40ms
 final int UPDATE_MILLIS = 40;
 int nPointsPerUpdate;   // no longer final, calculate every time in initSystem
+int lastDataProcessingMillis = -UPDATE_MILLIS;
+boolean dataProcessingPending = true;
+long dataProcessingGeneration = 0;
 
 //define some data fields for handling data here in processing
 float dataProcessingRawBuffer[][]; //2D array to handle multiple data channels, each row is a new channel so that dataBuffY[3][] is channel 4
@@ -750,7 +753,7 @@ public int getCurrentBoardBufferSize() {
 
 /**
 * @description Get the correct points of FFT based on sampling rate
-* @returns `int` - Points of FFT. 125Hz, 200Hz, 250Hz -> 256points. 1000Hz -> 1024points. 1600Hz -> 2048 points.
+* @returns `int` - Points of FFT. 125Hz, 200Hz, 250Hz -> 256points. 1000Hz -> 1024points. 1600Hz, 2000Hz -> 2048 points.
 */
 int getNfftSafe() {
     int sampleRate = currentBoard.getSampleRate();
@@ -760,6 +763,7 @@ int getNfftSafe() {
         case 1000:
             return 1024;
         case 1600:
+        case 2000:
             return 2048;
         case 125:
         case 200:
@@ -781,6 +785,15 @@ void initCoreDataObjects() {
     }
 
     dataProcessing = new DataProcessing(nchan, currentBoard.getSampleRate());
+    lastDataProcessingMillis = millis() - getDataProcessingUpdateMillis();
+    dataProcessingPending = true;
+    dataProcessingGeneration = 0;
+}
+
+int getDataProcessingUpdateMillis() {
+    // 20 Hz is sufficient for plots at 2000 Hz while leaving render frames
+    // between DSP updates. Acquisition and file logging remain full-rate.
+    return currentBoard != null && currentBoard.getSampleRate() >= 1600 ? 50 : UPDATE_MILLIS;
 }
 
 void initFFTObjectsAndBuffer() {
@@ -902,6 +915,11 @@ void systemUpdate() { // for updating data values and variables
 
     currentBoard.update();
 
+    double[][] latestBoardFrame = currentBoard.getFrameData();
+    if (latestBoardFrame != null && latestBoardFrame.length > 0 && latestBoardFrame[0].length > 0) {
+        dataProcessingPending = true;
+    }
+
     dataLogger.update();
 
     helpWidget.update();
@@ -918,7 +936,12 @@ void systemUpdate() { // for updating data values and variables
         }
     }
     if (systemMode == SYSTEMMODE_POSTINIT) {
-        processNewData();
+        int now = millis();
+        if (dataProcessingPending && now - lastDataProcessingMillis >= getDataProcessingUpdateMillis()) {
+            processNewData();
+            lastDataProcessingMillis = now;
+            dataProcessingPending = false;
+        }
         
         //alternative component listener function (line 177 mouseReleased- 187 frame.addComponentListener) for processing 3,
         //Component listener doesn't seem to work, so staying with this method for now
@@ -993,6 +1016,9 @@ void systemInitSession() {
         } catch (Exception e) {
             e.printStackTrace();
             haltSystem();
+            String detail = e.getMessage();
+            outputError("Failed to start session (" + e.getClass().getSimpleName() + ")" +
+                ((detail == null || detail.length() == 0) ? ". See Console Log for details." : ": " + detail));
         }
         midInitCheck2 = false;
         midInit = false;
@@ -1005,7 +1031,10 @@ void systemInitSession() {
 void updateToNChan(int _nchan) {
     nchan = _nchan;
     settings.slnchan = _nchan; //used in SoftwareSettings.pde only
-    fftBuff = new ddf.minim.analysis.FFT[nchan];  //reinitialize the FFT buffer
+    // Both FFT arrays are sized from the channel count. Recreate both when a
+    // data source changes the GUI from its default 8 channels to 16 channels.
+    fftBuff = new ddf.minim.analysis.FFT[nchan];
+    fftBuffSpectrogram = new ddf.minim.analysis.FFT[nchan];
     println("OpenBCI_GUI: Channel count set to " + str(nchan));
 }
 

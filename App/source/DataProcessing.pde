@@ -22,20 +22,26 @@ void processNewData() {
     List<double[]> currentData = currentBoard.getData(getCurrentBoardBufferSize());
     int[] exgChannels = currentBoard.getEXGChannels();
     int channelCount = currentBoard.getNumEXGChannels();
+    int bufferSize = dataProcessingRawBuffer[0].length;
 
-    //update the data buffers
-    for (int Ichan=0; Ichan < channelCount; Ichan++) {
-        for(int i = 0; i < getCurrentBoardBufferSize(); i++) {
-            dataProcessingRawBuffer[Ichan][i] = (float)currentData.get(i)[exgChannels[Ichan]];
+    // Read each row once. This is especially important for the circular history
+    // buffer, and avoids doing one synchronized list lookup per channel.
+    for (int i = 0; i < bufferSize; i++) {
+        double[] row = currentData.get(i);
+        for (int Ichan = 0; Ichan < channelCount; Ichan++) {
+            dataProcessingRawBuffer[Ichan][i] = (float)row[exgChannels[Ichan]];
         }
-
-        dataProcessingFilteredBuffer[Ichan] = dataProcessingRawBuffer[Ichan].clone();
+    }
+    for (int Ichan = 0; Ichan < channelCount; Ichan++) {
+        System.arraycopy(dataProcessingRawBuffer[Ichan], 0,
+                         dataProcessingFilteredBuffer[Ichan], 0, bufferSize);
     }
 
     //apply additional processing for the time-domain montage plot (ie, filtering)
     dataProcessing.process(dataProcessingFilteredBuffer, fftBuff);
 
     dataProcessing.newDataToSend = true;
+    dataProcessingGeneration++;
 
     //look to see if the latest data is railed so that we can notify the user on the GUI
     for (int Ichan=0; Ichan < nchan; Ichan++) is_railed[Ichan].update(dataProcessingRawBuffer[Ichan], Ichan);
@@ -54,6 +60,18 @@ void processNewData() {
         // Store to the global variable
         data_elec_imp_ohm[Ichan] = impedance;
     }
+}
+
+// Only the visible Time Series duration needs a fully filtered history. Two
+// preceding seconds are retained as filter warm-up, matching dataBuff_len_sec.
+int getDataProcessingSampleCount() {
+    int visibleSeconds = 5;
+    if (w_timeSeries != null && w_timeSeries.getTSHorizScale() != null) {
+        visibleSeconds = w_timeSeries.getTSHorizScale().getValue();
+    }
+    int samples = (visibleSeconds + 2) * currentBoard.getSampleRate();
+    samples = max(samples, getNfftSafe());
+    return min(samples, getCurrentBoardBufferSize());
 }
 
 void initializeFFTObjects(ddf.minim.analysis.FFT[] fftBuff, float[][] dataProcessingRawBuffer, int Nfft, float fs_Hz) {
@@ -92,6 +110,9 @@ class DataProcessing {
     };  //upper bound for each frequency band of interest
     float avgPowerInBins[][];
     float headWidePower[];
+    private double[][] filterScratch;
+    private float[] fftWorkBuffer;
+    private float[] prevFFTdata;
 
     public EmgSettings emgSettings;
 
@@ -103,6 +124,9 @@ class DataProcessing {
         newDataToSend = false;
         avgPowerInBins = new float[nchan][processing_band_low_Hz.length];
         headWidePower = new float[processing_band_low_Hz.length];
+        filterScratch = new double[nchan][];
+        fftWorkBuffer = new float[getNfftSafe()];
+        prevFFTdata = new float[getNfftSafe()/2 + 1];
 
         emgSettings = new EmgSettings();
     }
@@ -116,7 +140,15 @@ class DataProcessing {
         // TODO: Use double arrays here and convert to float only to plot data.
         // ^^^ This might not feasible or meaningful performance improvement. I looked into it a while ago and it seems we need floats for the FFT library also. -RW 2022)
         try {
-            double[] tempArray = floatToDoubleArray(data_forDisplay_uV[Ichan]);
+            int samplesToFilter = min(getDataProcessingSampleCount(), data_forDisplay_uV[Ichan].length);
+            int filterStart = data_forDisplay_uV[Ichan].length - samplesToFilter;
+            if (filterScratch[Ichan] == null || filterScratch[Ichan].length != samplesToFilter) {
+                filterScratch[Ichan] = new double[samplesToFilter];
+            }
+            double[] tempArray = filterScratch[Ichan];
+            for (int i = 0; i < samplesToFilter; i++) {
+                tempArray[i] = data_forDisplay_uV[Ichan][filterStart + i];
+            }
             
             //Apply BandStop filter if the filter should be active on this channel
             if (filterSettings.values.bandStopFilterActive[Ichan].isActive()) {
@@ -170,15 +202,15 @@ class DataProcessing {
                     break;
             }
 
-            doubleToFloatArray(tempArray, data_forDisplay_uV[Ichan]);
+            for (int i = 0; i < samplesToFilter; i++) {
+                data_forDisplay_uV[Ichan][filterStart + i] = (float)tempArray[i];
+            }
         } catch (BrainFlowError e) {
             e.printStackTrace();
         }
 
         //compute the standard deviation of the filtered signal...this is for the head plot
-        float[] fooData_filt = dataProcessingFilteredBuffer[Ichan];  //use the filtered data
-        fooData_filt = Arrays.copyOfRange(fooData_filt, fooData_filt.length-((int)fs_Hz), fooData_filt.length);   //just grab the most recent second of data
-        data_std_uV[Ichan]=std(fooData_filt); //compute the standard deviation for the whole array "fooData_filt"
+        data_std_uV[Ichan] = stdTail(dataProcessingFilteredBuffer[Ichan], (int)fs_Hz);
 
         //copy the previous FFT data...enables us to apply some smoothing to the FFT data
         for (int I=0; I < fftBuff[Ichan].specSize(); I++) {
@@ -186,18 +218,23 @@ class DataProcessing {
         }
 
         //prepare the data for the new FFT
-        float[] fooData;
+        float[] sourceData;
         if (isFFTFiltered == true) {
-            fooData = dataProcessingFilteredBuffer[Ichan];  //use the filtered data for the FFT
+            sourceData = dataProcessingFilteredBuffer[Ichan];  //use the filtered data for the FFT
         } else {
-            fooData = dataProcessingRawBuffer[Ichan];  //use the raw data for the FFT
+            sourceData = dataProcessingRawBuffer[Ichan];  //use the raw data for the FFT
         }
-        fooData = Arrays.copyOfRange(fooData, fooData.length-Nfft, fooData.length);   //trim to grab just the most recent block of data
-        float meanData = mean(fooData);  //compute the mean
-        for (int I=0; I < fooData.length; I++) fooData[I] -= meanData; //remove the mean (for a better looking FFT
+        int fftStart = sourceData.length - Nfft;
+        float meanData = 0;
+        for (int I = 0; I < Nfft; I++) {
+            fftWorkBuffer[I] = sourceData[fftStart + I];
+            meanData += fftWorkBuffer[I];
+        }
+        meanData /= Nfft;
+        for (int I = 0; I < Nfft; I++) fftWorkBuffer[I] -= meanData;
 
         //compute the FFT
-        fftBuff[Ichan].forward(fooData); //compute FFT on this channel of data
+        fftBuff[Ichan].forward(fftWorkBuffer); //compute FFT on this channel of data
 
         // FFT ref: https://www.mathworks.com/help/matlab/ref/fft.html
         // first calculate double-sided FFT amplitude spectrum
@@ -237,32 +274,27 @@ class DataProcessing {
         // when i = 1 ~ (N/2-1), psd = (N / fs) * mag(i)^2 / 4
         // when i = 0 or i = N/2, psd = (N / fs) * mag(i)^2
 
-        for (int i = 0; i < processing_band_low_Hz.length; i++) {
-            float sum = 0;
-            // int binNum = 0;
-            for (int Ibin = 0; Ibin <= Nfft/2; Ibin ++) { // loop over FFT bins
-                float FFT_freq_Hz = fftBuff[Ichan].indexToFreq(Ibin);   // center frequency of this bin
-                float psdx = 0;
-                // if the frequency matches a band
-                if (FFT_freq_Hz >= processing_band_low_Hz[i] && FFT_freq_Hz < processing_band_high_Hz[i]) {
+        Arrays.fill(avgPowerInBins[Ichan], 0);
+        for (int Ibin = 0; Ibin <= Nfft/2; Ibin++) {
+            float FFT_freq_Hz = fftBuff[Ichan].indexToFreq(Ibin);
+            if (FFT_freq_Hz >= processing_band_high_Hz[processing_band_high_Hz.length - 1]) {
+                break;
+            }
+            for (int band = 0; band < processing_band_low_Hz.length; band++) {
+                if (FFT_freq_Hz >= processing_band_low_Hz[band] && FFT_freq_Hz < processing_band_high_Hz[band]) {
+                    float amplitude = fftBuff[Ichan].getBand(Ibin);
+                    float psdx = amplitude * amplitude * Nfft / currentBoard.getSampleRate();
                     if (Ibin != 0 && Ibin != Nfft/2) {
-                        psdx = fftBuff[Ichan].getBand(Ibin) * fftBuff[Ichan].getBand(Ibin) * Nfft/currentBoard.getSampleRate() / 4;
+                        psdx /= 4;
                     }
-                    else {
-                        psdx = fftBuff[Ichan].getBand(Ibin) * fftBuff[Ichan].getBand(Ibin) * Nfft/currentBoard.getSampleRate();
-                    }
-                    sum += psdx;
-                    // binNum ++;
+                    avgPowerInBins[Ichan][band] += psdx;
+                    break;
                 }
             }
-            avgPowerInBins[Ichan][i] = sum;   // total power in a band
-            // println(i, binNum, sum);
         }
     }
 
     public void process(float[][] data_forDisplay_uV, ddf.minim.analysis.FFT[] fftData) {              //holds the FFT (frequency spectrum) of the latest data
-
-        float prevFFTdata[] = new float[fftBuff[0].specSize()];
 
         for (int Ichan=0; Ichan < nchan; Ichan++) { 
             processChannel(Ichan, data_forDisplay_uV, prevFFTdata);
@@ -280,15 +312,10 @@ class DataProcessing {
         //find strongest channel
         int refChanInd = findMax(data_std_uV);
         //println("EEG_Processing: strongest chan (one referenced) = " + (refChanInd+1));
-        float[] refData_uV = dataProcessingFilteredBuffer[refChanInd];  //use the filtered data
-        refData_uV = Arrays.copyOfRange(refData_uV, refData_uV.length-((int)fs_Hz), refData_uV.length);   //just grab the most recent second of data
-
-
         //compute polarity of each channel
+        float[] refData_uV = dataProcessingFilteredBuffer[refChanInd];
         for (int Ichan=0; Ichan < nchan; Ichan++) {
-            float[] fooData_filt = dataProcessingFilteredBuffer[Ichan];  //use the filtered data
-            fooData_filt = Arrays.copyOfRange(fooData_filt, fooData_filt.length-((int)fs_Hz), fooData_filt.length);   //just grab the most recent second of data
-            float dotProd = calcDotProduct(fooData_filt, refData_uV);
+            float dotProd = calcDotProductTail(dataProcessingFilteredBuffer[Ichan], refData_uV, (int)fs_Hz);
             if (dotProd >= 0.0f) {
                 polarity[Ichan]=1.0;
             } else {
@@ -298,5 +325,31 @@ class DataProcessing {
 
         //Compute EMG values independent of widgets
         emgSettings.values.process(dataProcessingFilteredBuffer);
+    }
+
+    private float stdTail(float[] data, int count) {
+        int samples = min(count, data.length);
+        int start = data.length - samples;
+        float average = 0;
+        for (int i = start; i < data.length; i++) average += data[i];
+        average /= samples;
+
+        float variance = 0;
+        for (int i = start; i < data.length; i++) {
+            float delta = data[i] - average;
+            variance += delta * delta;
+        }
+        return (float)Math.sqrt(variance / samples);
+    }
+
+    private float calcDotProductTail(float[] data1, float[] data2, int count) {
+        int samples = min(count, min(data1.length, data2.length));
+        int start1 = data1.length - samples;
+        int start2 = data2.length - samples;
+        float value = 0;
+        for (int i = 0; i < samples; i++) {
+            value += data1[start1 + i] * data2[start2 + i];
+        }
+        return value;
     }
 }

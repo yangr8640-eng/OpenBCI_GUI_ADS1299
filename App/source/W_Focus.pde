@@ -23,6 +23,8 @@ import brainflow.MLModel;
 
 class W_Focus extends Widget {
 
+    private static final int FOCUS_UPDATE_MILLIS = 250;
+
     //to see all core variables/methods of the Widget class, refer to Widget.pde
     //put your custom variables here...
     //private ControlP5 focus_cp5;
@@ -60,6 +62,7 @@ class W_Focus extends Widget {
     MLModel mlModel;
     private double metricPrediction = 0d;
     private boolean predictionExceedsThreshold = false;
+    private int lastFocusUpdateMillis = -FOCUS_UPDATE_MILLIS;
 
     private float xc, yc, wc, hc; // status circle center xy, width and height
     private int graphX, graphY, graphW, graphH;
@@ -130,11 +133,13 @@ class W_Focus extends Widget {
             prevChanSelectIsVisible = focusChanSelect.isVisible();
         }
 
-        if (currentBoard.isStreaming()) {
+        int now = millis();
+        if (currentBoard.isStreaming() && now - lastFocusUpdateMillis >= FOCUS_UPDATE_MILLIS) {
             metricPrediction = updateFocusState();
             dataGrid.setString(df.format(metricPrediction), 0, 1);
             focusBar.update(metricPrediction);
             predictionExceedsThreshold = metricPrediction > focusThreshold.getValue();
+            lastFocusUpdateMillis = now;
         }
 
         lockElementsOnOverlapCheck(cp5ElementsToCheck);
@@ -259,9 +264,14 @@ class W_Focus extends Widget {
             }
 
             for (int i = 0; i < channelCount; i++) {
-                dataArray[i] = new double[windowSize];
-                for (int j = 0; j < currentData.size(); j++) {
-                    dataArray[i][j] = currentData.get(j)[exgChannels[i]];
+                if (dataArray[i] == null || dataArray[i].length != windowSize) {
+                    dataArray[i] = new double[windowSize];
+                }
+            }
+            for (int j = 0; j < currentData.size(); j++) {
+                double[] row = currentData.get(j);
+                for (int i = 0; i < channelCount; i++) {
+                    dataArray[i][j] = row[exgChannels[i]];
                 }
             }
 

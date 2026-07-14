@@ -2553,6 +2553,7 @@ class ADS129xConfigBox {
     private Button sampleRate250;
     private Button sampleRate500;
     private Button sampleRate1000;
+    private Button sampleRate2000;
     private int selectedRate = 250;
 
     ADS129xConfigBox(int _x, int _y, int _w, int _h, int _padding) {
@@ -2584,11 +2585,12 @@ class ADS129xConfigBox {
             .onDoublePress(cb)
             .setAutoClear(false);
 
-        int buttonWidth = (w - padding*4) / 3;
+        int buttonWidth = (w - padding*5) / 4;
         int buttonY = portY + objectH + padding + labelH;
         sampleRate250 = createSampleRateButton("ads129xSR250", "250Hz", x + padding, buttonY, buttonWidth, objectH, 250);
         sampleRate500 = createSampleRateButton("ads129xSR500", "500Hz", x + padding*2 + buttonWidth, buttonY, buttonWidth, objectH, 500);
         sampleRate1000 = createSampleRateButton("ads129xSR1000", "1000Hz", x + padding*3 + buttonWidth*2, buttonY, buttonWidth, objectH, 1000);
+        sampleRate2000 = createSampleRateButton("ads129xSR2000", "2000Hz", x + padding*4 + buttonWidth*3, buttonY, buttonWidth, objectH, 2000);
         setSampleRateInternal(250, false);
     }
 
@@ -2639,7 +2641,7 @@ class ADS129xConfigBox {
     }
 
     private void setSampleRateInternal(int rate, boolean updateGlobalSampleRate) {
-        if (rate != 250 && rate != 500 && rate != 1000) {
+        if (rate != 250 && rate != 500 && rate != 1000 && rate != 2000) {
             rate = 250;
         }
         selectedRate = rate;
@@ -2647,18 +2649,18 @@ class ADS129xConfigBox {
             selectedSamplingRate = rate;
         }
         if (sampleRate250 != null) {
+            sampleRate250.setOff();
+            sampleRate500.setOff();
+            sampleRate1000.setOff();
+            sampleRate2000.setOff();
             if (rate == 250) {
                 sampleRate250.setOn();
-                sampleRate500.setOff();
-                sampleRate1000.setOff();
             } else if (rate == 500) {
-                sampleRate250.setOff();
                 sampleRate500.setOn();
-                sampleRate1000.setOff();
-            } else {
-                sampleRate250.setOff();
-                sampleRate500.setOff();
+            } else if (rate == 1000) {
                 sampleRate1000.setOn();
+            } else {
+                sampleRate2000.setOn();
             }
         }
     }
@@ -3183,5 +3185,3 @@ class InitBox {
         initSystemButton.getCaptionLabel().setText(text);
     }
 };
-
-

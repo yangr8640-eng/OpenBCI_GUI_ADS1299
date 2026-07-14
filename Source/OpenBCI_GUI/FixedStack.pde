@@ -1,35 +1,69 @@
-import java.util.Stack;
+import java.util.AbstractList;
+import java.util.Arrays;
 
 
-public class FixedStack<T> extends Stack<T> {
+// A fixed-capacity list that exposes the oldest item at index 0.
+// Once full, push() overwrites the oldest item in O(1) time.
+public class FixedStack<T> extends AbstractList<T> {
+    private Object[] elements;
     private int maxSize;
+    private int start;
+    private int count;
 
     public FixedStack(int size) {
-        super();
-        this.maxSize = size;
+        setSize(size);
     }
 
     public FixedStack() {
-        super();
-        maxSize = 1000;
+        setSize(1000);
     }
 
-    // not thread safe with push but its temporary
     public void setSize(int size) {
+        if (size < 0) {
+            throw new IllegalArgumentException("FixedStack size cannot be negative");
+        }
         maxSize = size;
+        elements = new Object[maxSize];
+        start = 0;
+        count = 0;
+        modCount++;
     }
 
     public void fill(T object) {
-        for (int i = 0; i < maxSize; i++) {
-            push(object);
+        Arrays.fill(elements, object);
+        start = 0;
+        count = maxSize;
+        modCount++;
+    }
+
+    public T push(T object) {
+        if (maxSize == 0) {
+            return object;
         }
+
+        if (count < maxSize) {
+            elements[(start + count) % maxSize] = object;
+            count++;
+        } else {
+            elements[start] = object;
+            start = (start + 1) % maxSize;
+        }
+        modCount++;
+        return object;
     }
 
     @Override
-    public T push(T object) {
-        while (this.size() >= maxSize) {
-            this.remove(0);
+    public T get(int index) {
+        if (index < 0 || index >= count) {
+            throw new IndexOutOfBoundsException("index=" + index + ", size=" + count);
         }
-        return super.push(object);
+        @SuppressWarnings("unchecked")
+        T value = (T)elements[(start + index) % maxSize];
+        return value;
+    }
+
+    @Override
+    public int size() {
+        return count;
     }
 }

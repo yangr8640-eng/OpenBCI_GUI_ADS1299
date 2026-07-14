@@ -455,6 +455,8 @@ void Duration(int n) {
 //one of these will be created for each channel (4, 8, or 16)
 class ChannelBar {
 
+    private static final int MAX_DISPLAY_POINTS = 2000;
+
     int channelIndex; //duh
     String channelString;
     int x, y, w, h;
@@ -489,6 +491,7 @@ class ChannelBar {
     float autoscaleMin;
     float autoscaleMax;
     int previousMillis = 0;
+    long lastPlotDataGeneration = -1;
     
     TextBox voltageValue;
     TextBox impValue;
@@ -590,8 +593,12 @@ class ChannelBar {
         }
         impValue.setText(fmt);
 
-        // update data in plot
-        updatePlotPoints();
+        // Rebuild plot points only when the DSP snapshot changes. Rendering and
+        // controls can still run at the full GUI frame rate.
+        if (lastPlotDataGeneration != dataProcessingGeneration) {
+            updatePlotPoints();
+            lastPlotDataGeneration = dataProcessingGeneration;
+        }
 
         if(currentBoard.isEXGChannelActive(channelIndex)) {
             onOffButton.setColorBackground(channelColors[channelIndex%8]); // power down == false, set color to vibrant
@@ -616,20 +623,61 @@ class ChannelBar {
     private void updatePlotPoints() {
         autoscaleMax = -Float.MAX_VALUE;
         autoscaleMin = Float.MAX_VALUE;
-        // update data in plot
-        if (dataProcessingFilteredBuffer[channelIndex].length >= nPoints) {
-            for (int i = dataProcessingFilteredBuffer[channelIndex].length - nPoints; i < dataProcessingFilteredBuffer[channelIndex].length; i++) {
-                float time = -(float)numSeconds + (float)(i-(dataProcessingFilteredBuffer[channelIndex].length-nPoints))*timeBetweenPoints;
-                float filt_uV_value = dataProcessingFilteredBuffer[channelIndex][i];
+        float[] channelData = dataProcessingFilteredBuffer[channelIndex];
+        int sourcePointCount = min(channelData.length, numSeconds * currentBoard.getSampleRate());
+        int sourceStart = channelData.length - sourcePointCount;
 
-                // update channel point in place
-                channelPoints.set(i-(dataProcessingFilteredBuffer[channelIndex].length-nPoints), time, filt_uV_value, "");
-                autoscaleMax = Math.max(filt_uV_value, autoscaleMax);
-                autoscaleMin = Math.min(filt_uV_value, autoscaleMin);
+        if (sourcePointCount <= nPoints) {
+            for (int offset = 0; offset < sourcePointCount; offset++) {
+                float value = channelData[sourceStart + offset];
+                float time = -(float)numSeconds + offset / (float)currentBoard.getSampleRate();
+                channelPoints.set(offset, time, value, "");
+                autoscaleMax = Math.max(value, autoscaleMax);
+                autoscaleMin = Math.min(value, autoscaleMin);
             }
-            applyAutoscale();
-            plot.setPoints(channelPoints); //reset the plot with updated channelPoints
+        } else {
+            // Preserve narrow EEG spikes with a min/max envelope rather than
+            // dropping every Nth point. Each bucket contributes two ordered
+            // extrema, limiting the renderer to MAX_DISPLAY_POINTS.
+            int bucketCount = nPoints / 2;
+            int pointIndex = 0;
+            for (int bucket = 0; bucket < bucketCount; bucket++) {
+                int bucketStart = bucket * sourcePointCount / bucketCount;
+                int bucketEnd = (bucket + 1) * sourcePointCount / bucketCount;
+                int minOffset = bucketStart;
+                int maxOffset = bucketStart;
+                float minValue = channelData[sourceStart + bucketStart];
+                float maxValue = minValue;
+
+                for (int offset = bucketStart + 1; offset < bucketEnd; offset++) {
+                    float value = channelData[sourceStart + offset];
+                    if (value < minValue) {
+                        minValue = value;
+                        minOffset = offset;
+                    }
+                    if (value > maxValue) {
+                        maxValue = value;
+                        maxOffset = offset;
+                    }
+                }
+
+                int firstOffset = minOffset <= maxOffset ? minOffset : maxOffset;
+                int secondOffset = minOffset <= maxOffset ? maxOffset : minOffset;
+                float firstValue = minOffset <= maxOffset ? minValue : maxValue;
+                float secondValue = minOffset <= maxOffset ? maxValue : minValue;
+                channelPoints.set(pointIndex++,
+                                  -(float)numSeconds + firstOffset / (float)currentBoard.getSampleRate(),
+                                  firstValue, "");
+                channelPoints.set(pointIndex++,
+                                  -(float)numSeconds + secondOffset / (float)currentBoard.getSampleRate(),
+                                  secondValue, "");
+                autoscaleMax = Math.max(maxValue, autoscaleMax);
+                autoscaleMin = Math.min(minValue, autoscaleMin);
+            }
         }
+
+        applyAutoscale();
+        plot.setPoints(channelPoints);
     }
 
     public void draw(boolean hardwareSettingsAreOpen) {        
@@ -700,7 +748,7 @@ class ChannelBar {
     }
 
     private int nPointsBasedOnDataSource() {
-        return numSeconds * currentBoard.getSampleRate();
+        return min(numSeconds * currentBoard.getSampleRate(), MAX_DISPLAY_POINTS);
     }
 
     public void adjustTimeAxis(int _newTimeSize) {
@@ -709,6 +757,7 @@ class ChannelBar {
 
         nPoints = nPointsBasedOnDataSource();
         channelPoints = new GPointsArray(nPoints);
+        timeBetweenPoints = (float)numSeconds / (float)nPoints;
         if(_newTimeSize > 1) {
             plot.getXAxis().setNTicks(_newTimeSize);  //sets the number of axis divisions...
         }else{
