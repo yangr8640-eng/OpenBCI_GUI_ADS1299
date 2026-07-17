@@ -19,6 +19,8 @@ Source/.git/
 # Python caches and generated analysis outputs
 __pycache__/
 *.py[cod]
+experiment_web/venv/
+experiment_web/server_*.log
 AnalysisTools/__pycache__/
 AnalysisTools/filtered_data/
 AnalysisTools/analysis_ready/

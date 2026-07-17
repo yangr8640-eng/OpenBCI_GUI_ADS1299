@@ -11,6 +11,7 @@
 - `UserData/Sample_Data/`: OpenBCI GUI 示例数据。
 - `BridgeTools/`: ADS129x 到 BrainFlow Streaming Board 的桥接脚本。
 - `AnalysisTools/`: EEG 数据过滤和离线分析脚本。
+- `experiment_web/`: MIST 实验网页、OpenBCI GUI 控制客户端和自动化测试。
 
 没有上传 `UserData/Recordings/`、`UserData/Console_Data/`、`downloads/`、`build_check/`、`Processing-3.5.4/` 等目录，因为它们分别是个人录制数据、运行日志、下载缓存、编译输出和本机安装包。
 

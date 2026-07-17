@@ -56,3 +56,12 @@ The native ADS1299 board exposes 21 rows:
 - `20`: marker
 
 OpenBCI CSV output uses these channel names and includes the formatted timestamp column added by the standard GUI writer.
+
+## Web Experiment Control
+
+The packaged GUI exposes a loopback-only experiment-control service at
+`127.0.0.1:1236`. The MIST web backend uses it to check the active ADS1299 TCP
+client, start and stop streaming at stage boundaries, finalize every recording,
+and apply a stage suffix to each EEG file name.
+
+See `experiment_web/README.md` for the startup sequence and protocol details.

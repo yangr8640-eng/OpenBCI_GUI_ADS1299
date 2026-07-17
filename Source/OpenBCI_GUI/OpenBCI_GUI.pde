@@ -122,6 +122,7 @@ int nextPlayback_millis = -100; //any negative number
 DataSource currentBoard = new BoardNull();
 
 DataLogger dataLogger = new DataLogger();
+ExperimentControlServer expControlServer;
 
 // Intialize interface protocols
 InterfaceSerial iSerial = new InterfaceSerial(); //This is messy, half-deprecated code. See comments in InterfaceSerial.pde - Nov. 2020
@@ -506,6 +507,11 @@ void delayedSetup() {
     //Apply GUI-wide settings to front end at the end of setup
     guiSettings.applySettings();
 
+    // Start the loopback-only experiment control server so the web experiment
+    // can start and stop stage recordings with deterministic file names.
+    expControlServer = new ExperimentControlServer(1236);
+    expControlServer.start();
+
     if (!isAdminUser() || isElevationNeeded()) {
         outputError("OpenBCI_GUI: This application is not being run with Administrator access. This could limit the ability to connect to devices or read/write files.");
     }
@@ -534,6 +540,11 @@ synchronized void draw() {
         if (systemMode == SYSTEMMODE_POSTINIT) {
             w_networking.compareAndSetNetworkingFrameLocks();
         }
+        // Execute queued network commands on Processing's main thread because
+        // GUI and DataLogger operations are not thread-safe.
+        if (expControlServer != null) {
+            expControlServer.checkCommands();
+        }
     } else if (systemMode == SYSTEMMODE_INTROANIMATION) {
         if (settings.introAnimationInit == 0) {
             settings.introAnimationInit = millis();
@@ -550,7 +561,9 @@ private void prepareExitHandler () {
     Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
         public void run () {
             System.out.println("SHUTDOWN HOOK");
-            
+            if (expControlServer != null) {
+                expControlServer.stop();
+            }
             haltSystem();
         }
     }
@@ -860,6 +873,74 @@ void stopRunning() {
     } else {
         output("Data stream is already stopped.");
     }
+}
+
+// ---- Experiment Control (called by ExperimentControlServer on the main thread) ----
+
+/** Start a recording using the experiment session and stage-based file name. */
+String experimentControlStartRecording(String experimentSessionName, String fileName) {
+    if (systemMode != SYSTEMMODE_POSTINIT) {
+        return "ERR:SESSION_NOT_STARTED";
+    }
+    if (!(currentBoard instanceof BoardADS129xTcp)) {
+        return "ERR:ADS1299_NOT_SELECTED";
+    }
+    if (!((BoardADS129xTcp)currentBoard).hasActiveTcpClient()) {
+        return "ERR:ADS1299_NOT_CONNECTED";
+    }
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping current recording before starting '" + fileName + "'");
+        String stopResult = experimentControlStopRecording();
+        if (!stopResult.startsWith("OK:")) {
+            return stopResult;
+        }
+        delay(150);  // Allow the previous stage file to flush and close.
+    }
+
+    dataLogger.setRecordingName(experimentSessionName, fileName);
+    // Follow the same path as the GUI button so top navigation remains in sync.
+    topNav.stopButtonWasPressed();
+    if (!currentBoard.isStreaming() || !settings.isLogFileOpen()) {
+        if (currentBoard.isStreaming()) {
+            topNav.stopButtonWasPressed();
+        }
+        dataLogger.closeExperimentLogFile();
+        return "ERR:START_FAILED";
+    }
+    println("ExpCtrl: Recording started for '" + fileName + "'");
+    return "OK:RECORDING " + fileName;
+}
+
+/** Stop and finalize the current stage recording. */
+String experimentControlStopRecording() {
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping recording");
+        topNav.stopButtonWasPressed();
+    } else {
+        println("ExpCtrl: Not currently recording, STOP ignored");
+    }
+    // ODF closes in stopRunning(); BDF needs explicit finalization per stage.
+    dataLogger.closeExperimentLogFile();
+    if (currentBoard.isStreaming() || settings.isLogFileOpen()) {
+        return "ERR:STOP_FAILED";
+    }
+    return "OK:STOPPED";
+}
+
+/** Return the live state checked by the web page before participant testing. */
+String experimentControlGetStatus() {
+    boolean sessionStarted = systemMode == SYSTEMMODE_POSTINIT;
+    boolean adsSelected = currentBoard instanceof BoardADS129xTcp;
+    boolean adsConnected = adsSelected
+        && ((BoardADS129xTcp)currentBoard).hasActiveTcpClient();
+    boolean streaming = currentBoard != null && currentBoard.isStreaming();
+    boolean recording = settings.isLogFileOpen();
+    return "STATUS"
+        + "|session_started=" + (sessionStarted ? "1" : "0")
+        + "|ads1299_selected=" + (adsSelected ? "1" : "0")
+        + "|ads1299_connected=" + (adsConnected ? "1" : "0")
+        + "|streaming=" + (streaming ? "1" : "0")
+        + "|recording=" + (recording ? "1" : "0");
 }
 
 //halt the data collection

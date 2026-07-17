@@ -85,6 +85,15 @@ import ddf.minim.analysis.*;
 import brainflow.DataFilter; 
 import brainflow.FilterTypes; 
 import java.io.StringWriter; 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.io.OutputStream; 
 import java.io.PrintStream; 
 import java.util.prefs.Preferences; 
@@ -269,6 +278,7 @@ int nextPlayback_millis = -100; //any negative number
 DataSource currentBoard = new BoardNull();
 
 DataLogger dataLogger = new DataLogger();
+ExperimentControlServer expControlServer;
 
 // Intialize interface protocols
 InterfaceSerial iSerial = new InterfaceSerial(); //This is messy, half-deprecated code. See comments in InterfaceSerial.pde - Nov. 2020
@@ -653,6 +663,11 @@ public void delayedSetup() {
     //Apply GUI-wide settings to front end at the end of setup
     guiSettings.applySettings();
 
+    // Start the loopback-only experiment control server so the web experiment
+    // can start and stop stage recordings with deterministic file names.
+    expControlServer = new ExperimentControlServer(1236);
+    expControlServer.start();
+
     if (!isAdminUser() || isElevationNeeded()) {
         outputError("OpenBCI_GUI: This application is not being run with Administrator access. This could limit the ability to connect to devices or read/write files.");
     }
@@ -681,6 +696,11 @@ public synchronized void draw() {
         if (systemMode == SYSTEMMODE_POSTINIT) {
             w_networking.compareAndSetNetworkingFrameLocks();
         }
+        // Execute queued network commands on Processing's main thread because
+        // GUI and DataLogger operations are not thread-safe.
+        if (expControlServer != null) {
+            expControlServer.checkCommands();
+        }
     } else if (systemMode == SYSTEMMODE_INTROANIMATION) {
         if (settings.introAnimationInit == 0) {
             settings.introAnimationInit = millis();
@@ -697,7 +717,9 @@ private void prepareExitHandler () {
     Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
         public void run () {
             System.out.println("SHUTDOWN HOOK");
-            
+            if (expControlServer != null) {
+                expControlServer.stop();
+            }
             haltSystem();
         }
     }
@@ -1007,6 +1029,74 @@ public void stopRunning() {
     } else {
         output("Data stream is already stopped.");
     }
+}
+
+// ---- Experiment Control (called by ExperimentControlServer on the main thread) ----
+
+/** Start a recording using the experiment session and stage-based file name. */
+public String experimentControlStartRecording(String experimentSessionName, String fileName) {
+    if (systemMode != SYSTEMMODE_POSTINIT) {
+        return "ERR:SESSION_NOT_STARTED";
+    }
+    if (!(currentBoard instanceof BoardADS129xTcp)) {
+        return "ERR:ADS1299_NOT_SELECTED";
+    }
+    if (!((BoardADS129xTcp)currentBoard).hasActiveTcpClient()) {
+        return "ERR:ADS1299_NOT_CONNECTED";
+    }
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping current recording before starting '" + fileName + "'");
+        String stopResult = experimentControlStopRecording();
+        if (!stopResult.startsWith("OK:")) {
+            return stopResult;
+        }
+        delay(150);  // Allow the previous stage file to flush and close.
+    }
+
+    dataLogger.setRecordingName(experimentSessionName, fileName);
+    // Follow the same path as the GUI button so top navigation remains in sync.
+    topNav.stopButtonWasPressed();
+    if (!currentBoard.isStreaming() || !settings.isLogFileOpen()) {
+        if (currentBoard.isStreaming()) {
+            topNav.stopButtonWasPressed();
+        }
+        dataLogger.closeExperimentLogFile();
+        return "ERR:START_FAILED";
+    }
+    println("ExpCtrl: Recording started for '" + fileName + "'");
+    return "OK:RECORDING " + fileName;
+}
+
+/** Stop and finalize the current stage recording. */
+public String experimentControlStopRecording() {
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping recording");
+        topNav.stopButtonWasPressed();
+    } else {
+        println("ExpCtrl: Not currently recording, STOP ignored");
+    }
+    // ODF closes in stopRunning(); BDF needs explicit finalization per stage.
+    dataLogger.closeExperimentLogFile();
+    if (currentBoard.isStreaming() || settings.isLogFileOpen()) {
+        return "ERR:STOP_FAILED";
+    }
+    return "OK:STOPPED";
+}
+
+/** Return the live state checked by the web page before participant testing. */
+public String experimentControlGetStatus() {
+    boolean sessionStarted = systemMode == SYSTEMMODE_POSTINIT;
+    boolean adsSelected = currentBoard instanceof BoardADS129xTcp;
+    boolean adsConnected = adsSelected
+        && ((BoardADS129xTcp)currentBoard).hasActiveTcpClient();
+    boolean streaming = currentBoard != null && currentBoard.isStreaming();
+    boolean recording = settings.isLogFileOpen();
+    return "STATUS"
+        + "|session_started=" + (sessionStarted ? "1" : "0")
+        + "|ads1299_selected=" + (adsSelected ? "1" : "0")
+        + "|ads1299_connected=" + (adsConnected ? "1" : "0")
+        + "|streaming=" + (streaming ? "1" : "0")
+        + "|recording=" + (recording ? "1" : "0");
 }
 
 //halt the data collection
@@ -2675,6 +2765,12 @@ class BoardADS129xTcp extends Board {
     @Override
     public boolean isConnected() {
         return serverSocket != null && !serverSocket.isClosed();
+    }
+
+    /** True only while the physical ADS1299 TCP client is attached. */
+    public boolean hasActiveTcpClient() {
+        Socket socket = clientSocket;
+        return connected && socket != null && socket.isConnected() && !socket.isClosed();
     }
 
     @Override
@@ -9750,6 +9846,7 @@ class DataLogger {
     public final int OUTPUT_SOURCE_ODF = 1; // The OpenBCI CSV Data Format
     public final int OUTPUT_SOURCE_BDF = 2; // The BDF data format http://www.biosemi.com/faq/file_format.htm
     private int outputDataSource;
+    private String customRecordingName = null;
 
     DataLogger() {
         //Default to OpenBCI CSV Data Format
@@ -9806,6 +9903,27 @@ class DataLogger {
         }
     }
 
+    /** Set a custom recording name for the next log file. */
+    public void setRecordingName(String name) {
+        setRecordingName(name, name);
+    }
+
+    /** Use one experiment folder while giving every stage its own file name. */
+    public void setRecordingName(String experimentSessionName, String fileName) {
+        customRecordingName = fileName;
+        setSessionName(experimentSessionName);
+        settings.setSessionPath(
+            directoryManager.getRecordingsPath()
+            + "OpenBCISession_" + experimentSessionName + File.separator
+        );
+        println("DataLogger: Recording name set to '" + fileName
+            + "' in session '" + experimentSessionName + "'");
+    }
+
+    public String getRecordingName() {
+        return customRecordingName;
+    }
+
     public void onStartStreaming() {
         if (outputDataSource > OUTPUT_SOURCE_NONE && eegDataSource != DATASOURCE_PLAYBACKFILE) {
             //open data file if it has not already been opened
@@ -9848,7 +9966,9 @@ class DataLogger {
                 openNewLogFileODF(_fileName);
                 break;
             case OUTPUT_SOURCE_BDF:
-                openNewLogFileBDF(_fileName);
+                String bdfFileName = customRecordingName != null ? customRecordingName : _fileName;
+                openNewLogFileBDF(bdfFileName);
+                customRecordingName = null;
                 break;
             case OUTPUT_SOURCE_NONE:
             default:
@@ -9885,12 +10005,22 @@ class DataLogger {
             println("OpenBCI_GUI: closing log file");
             closeLogFile();
         }
-        //open the new file
-        fileWriterODF = new DataWriterODF(sessionName, _fileName);
-        if (currentBoard instanceof AuxDataBoard) {
-            if (fileWriterAuxODF != null)
-                fileWriterAuxODF.closeFile();
-            fileWriterAuxODF = new DataWriterAuxODF(sessionName, _fileName);
+        if (customRecordingName != null) {
+            println("DataLogger: Using custom recording name: " + customRecordingName);
+            fileWriterODF = new DataWriterODF(sessionName, customRecordingName, true);
+            if (currentBoard instanceof AuxDataBoard) {
+                if (fileWriterAuxODF != null)
+                    fileWriterAuxODF.closeFile();
+                fileWriterAuxODF = new DataWriterAuxODF(sessionName, customRecordingName, true);
+            }
+            customRecordingName = null;
+        } else {
+            fileWriterODF = new DataWriterODF(sessionName, _fileName);
+            if (currentBoard instanceof AuxDataBoard) {
+                if (fileWriterAuxODF != null)
+                    fileWriterAuxODF.closeFile();
+                fileWriterAuxODF = new DataWriterAuxODF(sessionName, _fileName);
+            }
         }
 
         output_fname = fileWriterODF.fname;
@@ -9911,6 +10041,13 @@ class DataLogger {
                 break;
         }
         settings.setLogFileIsOpen(false);
+    }
+
+    /** Close and finalize the current file, including BDF experiment files. */
+    public void closeExperimentLogFile() {
+        if (settings.isLogFileOpen()) {
+            closeLogFile();
+        }
     }
 
     /**
@@ -11234,6 +11371,10 @@ public class DataWriterAuxODF extends DataWriterODF {
     DataWriterAuxODF(String _sessionName, String _fileName) {
         super(_sessionName, _fileName);
     }
+
+    DataWriterAuxODF(String _sessionName, String _fileName, boolean useAsCompleteName) {
+        super(_sessionName, _fileName, useAsCompleteName);
+    }
     
     protected int getNumberOfChannels() {
         return ((AuxDataBoard)currentBoard).getNumAuxChannels();
@@ -12398,12 +12539,21 @@ public class DataWriterODF {
     protected String fileNamePrependString = "OpenBCI-RAW-";
     protected String headerFirstLineString = "%OpenBCI Raw EXG Data";
 
-    //variation on constructor to have custom name
+    // Standard constructor: uses the "OpenBCI-RAW-<fileName>.txt" pattern.
     DataWriterODF(String _sessionName, String _fileName) {
+        this(_sessionName, _fileName, false);
+    }
+
+    // When useAsCompleteName is true, _fileName is the complete base name.
+    DataWriterODF(String _sessionName, String _fileName, boolean useAsCompleteName) {
         settings.setSessionPath(directoryManager.getRecordingsPath() + "OpenBCISession_" + _sessionName + File.separator);
         fname = settings.getSessionPath();
-        fname += fileNamePrependString;
-        fname += _fileName;
+        if (useAsCompleteName) {
+            fname += _fileName;
+        } else {
+            fname += fileNamePrependString;
+            fname += _fileName;
+        }
         fname += ".txt";
         output = createWriter(fname);        //open the file
         writeHeader();    //add the header
@@ -13850,6 +14000,209 @@ class EmgSettingsValues {
 
     public float getLowerThreshold(int channel) {
         return lowerThreshold[channel];
+    }
+}
+
+
+
+
+
+
+
+
+
+
+/**
+ * Lightweight TCP server that accepts remote commands to control data recording.
+ *
+ * Use case: the MIST EEG experiment (Python/PsychoPy) sends commands at stage
+ * boundaries so the GUI automatically starts/stops recording with the correct
+ * file name without manual intervention.
+ *
+ * Protocol (newline-delimited text):
+ *   RECORD:<name>  – stop current recording, set file name, start new recording
+ *   STOP           – stop current recording
+ *   PING           – respond "PONG" (connection test)
+ *
+ * Thread safety: network I/O runs on a daemon thread; commands are queued and
+ * dispatched on the main draw/update thread via checkCommands().
+ */
+class ExperimentControlServer {
+    private final int listenPort;
+    private volatile boolean shouldRun = false;
+    private ServerSocket serverSocket = null;
+    private Socket clientSocket = null;
+    private Thread serverThread = null;
+    private PrintWriter clientOut = null;
+    private final ConcurrentLinkedQueue<String> commandQueue = new ConcurrentLinkedQueue<String>();
+
+    ExperimentControlServer(int port) {
+        listenPort = port;
+    }
+
+    // ---- Lifecycle ----
+
+    public void start() {
+        if (listenPort <= 0 || listenPort > 65535) {
+            println("ExpCtrlServer: Invalid port " + listenPort + ". Not starting.");
+            return;
+        }
+        try {
+            // Control is deliberately loopback-only; participant/file names must
+            // never be controllable by another machine on the LAN.
+            serverSocket = new ServerSocket();
+            serverSocket.setReuseAddress(true);
+            serverSocket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), listenPort));
+            shouldRun = true;
+            serverThread = new Thread(new Runnable() {
+                public void run() {
+                    runServerLoop();
+                }
+            }, "ExperimentControlServer");
+            serverThread.setDaemon(true);
+            serverThread.start();
+            println("ExpCtrlServer: Listening for experiment control commands on 127.0.0.1:" + listenPort);
+        } catch (IOException e) {
+            println("ExpCtrlServer: Could not listen on port " + listenPort + ": " + e.getMessage());
+        }
+    }
+
+    public void stop() {
+        shouldRun = false;
+        closeClient();
+        closeServerSocket();
+        if (serverThread != null) {
+            try {
+                serverThread.join(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            serverThread = null;
+        }
+        commandQueue.clear();
+        println("ExpCtrlServer: Stopped.");
+    }
+
+    // ---- Server loop (daemon thread) ----
+
+    private void runServerLoop() {
+        while (shouldRun) {
+            try {
+                if (serverSocket == null || serverSocket.isClosed()) break;
+                println("ExpCtrlServer: Waiting for client connection...");
+                clientSocket = serverSocket.accept();
+                clientSocket.setTcpNoDelay(true);
+                clientSocket.setSoTimeout(0); // block indefinitely
+                clientOut = new PrintWriter(clientSocket.getOutputStream(), true);
+                println("ExpCtrlServer: Client connected: " + clientSocket.getInetAddress());
+
+                BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(clientSocket.getInputStream(), "UTF-8"));
+                String line;
+                while (shouldRun && (line = reader.readLine()) != null) {
+                    line = line.trim();
+                    if (!line.isEmpty()) {
+                        commandQueue.add(line);
+                        println("ExpCtrlServer: Queued command: " + line);
+                    }
+                }
+            } catch (IOException e) {
+                if (shouldRun) {
+                    println("ExpCtrlServer: Connection error: " + e.getMessage());
+                }
+            } finally {
+                closeClient();
+            }
+        }
+    }
+
+    // ---- Called from the main draw thread ----
+
+    /**
+     * Drain the command queue and dispatch each command on the main thread.
+     * Must be called from the Processing draw() / systemUpdate() thread because
+     * most GUI operations (startRunning, stopRunning, DataLogger, etc.) are not
+     * thread-safe.
+     */
+    public void checkCommands() {
+        String cmd;
+        while ((cmd = commandQueue.poll()) != null) {
+            dispatchCommand(cmd);
+        }
+    }
+
+    // ---- Command dispatch ----
+
+    private void dispatchCommand(String cmd) {
+        if (cmd.equalsIgnoreCase("PING")) {
+            sendResponse("PONG");
+            println("ExpCtrlServer: PING received, sent PONG");
+        } else if (cmd.equalsIgnoreCase("STATUS")) {
+            sendResponse(experimentControlGetStatus());
+        } else if (cmd.equalsIgnoreCase("STOP")) {
+            println("ExpCtrlServer: Executing STOP");
+            sendResponse(experimentControlStopRecording());
+        } else if (cmd.toUpperCase().startsWith("RECORD:")) {
+            String payload = cmd.substring(7).trim();
+            if (payload.isEmpty()) {
+                sendResponse("ERR:empty recording name");
+                return;
+            }
+            String experimentSessionName = payload;
+            String fileName = payload;
+            int separator = payload.indexOf('|');
+            if (separator >= 0) {
+                experimentSessionName = payload.substring(0, separator).trim();
+                fileName = payload.substring(separator + 1).trim();
+            }
+            experimentSessionName = sanitizeName(experimentSessionName);
+            fileName = sanitizeName(fileName);
+            if (experimentSessionName.isEmpty() || fileName.isEmpty()) {
+                sendResponse("ERR:invalid recording name");
+                return;
+            }
+            println("ExpCtrlServer: Executing RECORD '" + fileName + "'");
+            sendResponse(experimentControlStartRecording(experimentSessionName, fileName));
+        } else {
+            sendResponse("ERR:unknown command: " + cmd);
+            println("ExpCtrlServer: Unknown command: " + cmd);
+        }
+    }
+
+    private String sanitizeName(String value) {
+        String sanitized = value.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (sanitized.length() > 120) {
+            sanitized = sanitized.substring(0, 120);
+        }
+        return sanitized;
+    }
+
+    private void sendResponse(String msg) {
+        if (clientOut != null) {
+            try {
+                clientOut.println(msg);
+                clientOut.flush();
+            } catch (Exception e) {
+                // client may have disconnected – ignore
+            }
+        }
+    }
+
+    // ---- Helpers for clean shutdown ----
+
+    private void closeClient() {
+        if (clientSocket != null) {
+            try { clientSocket.close(); } catch (IOException e) { }
+            clientSocket = null;
+        }
+        clientOut = null;
+    }
+
+    private void closeServerSocket() {
+        if (serverSocket != null) {
+            try { serverSocket.close(); } catch (IOException e) { }
+            serverSocket = null;
+        }
     }
 }
 

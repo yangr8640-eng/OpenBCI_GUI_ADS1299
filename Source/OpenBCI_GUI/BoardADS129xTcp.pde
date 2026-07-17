@@ -177,6 +177,12 @@ class BoardADS129xTcp extends Board {
         return serverSocket != null && !serverSocket.isClosed();
     }
 
+    /** True only while the physical ADS1299 TCP client is attached. */
+    public boolean hasActiveTcpClient() {
+        Socket socket = clientSocket;
+        return connected && socket != null && socket.isConnected() && !socket.isClosed();
+    }
+
     @Override
     public boolean isStreaming() {
         return streaming;
