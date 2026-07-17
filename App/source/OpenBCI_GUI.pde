@@ -122,6 +122,7 @@ int nextPlayback_millis = -100; //any negative number
 DataSource currentBoard = new BoardNull();
 
 DataLogger dataLogger = new DataLogger();
+ExperimentControlServer expControlServer;
 
 // Intialize interface protocols
 InterfaceSerial iSerial = new InterfaceSerial(); //This is messy, half-deprecated code. See comments in InterfaceSerial.pde - Nov. 2020
@@ -151,6 +152,9 @@ CytonSDMode cyton_sdSetting = CytonSDMode.NO_WRITE;
 // The sampling rate should be ideally a multiple of 25, so as to make actual buffer update rate exactly 40ms
 final int UPDATE_MILLIS = 40;
 int nPointsPerUpdate;   // no longer final, calculate every time in initSystem
+int lastDataProcessingMillis = -UPDATE_MILLIS;
+boolean dataProcessingPending = true;
+long dataProcessingGeneration = 0;
 
 //define some data fields for handling data here in processing
 float dataProcessingRawBuffer[][]; //2D array to handle multiple data channels, each row is a new channel so that dataBuffY[3][] is channel 4
@@ -391,6 +395,13 @@ void setup() {
     }
     
     directoryManager = new DirectoryManager();
+    if (!directoryManager.init()) {
+        showStartupError = true;
+        startupErrorMessage = "OpenBCI GUI could not create its data directory.\n\n" +
+            directoryManager.getGuiDataPath() + "\n\n" +
+            "Set OPENBCI_GUI_DATA_DIR to a writable directory and relaunch the application.";
+        return;
+    }
 
     // redirect all output to a custom stream that will intercept all prints
     // write them to file and display them in the GUI's console window
@@ -425,8 +436,6 @@ void setup() {
     println("Welcome to the Processing-based OpenBCI GUI!"); //Welcome line.
     println("For more information, please visit: https://docs.openbci.com/Software/OpenBCISoftware/GUIDocs/");
     
-    // Copy sample data to the Users' Documents folder +  create Recordings folder
-    directoryManager.init();
     settings = new SessionSettings();
     guiSettings = new GuiSettings(directoryManager.getSettingsPath());
     userPlaybackHistoryFile = directoryManager.getSettingsPath()+"UserPlaybackHistory.json";
@@ -498,6 +507,11 @@ void delayedSetup() {
     //Apply GUI-wide settings to front end at the end of setup
     guiSettings.applySettings();
 
+    // Start the loopback-only experiment control server so the web experiment
+    // can start and stop stage recordings with deterministic file names.
+    expControlServer = new ExperimentControlServer(1236);
+    expControlServer.start();
+
     if (!isAdminUser() || isElevationNeeded()) {
         outputError("OpenBCI_GUI: This application is not being run with Administrator access. This could limit the ability to connect to devices or read/write files.");
     }
@@ -526,6 +540,11 @@ synchronized void draw() {
         if (systemMode == SYSTEMMODE_POSTINIT) {
             w_networking.compareAndSetNetworkingFrameLocks();
         }
+        // Execute queued network commands on Processing's main thread because
+        // GUI and DataLogger operations are not thread-safe.
+        if (expControlServer != null) {
+            expControlServer.checkCommands();
+        }
     } else if (systemMode == SYSTEMMODE_INTROANIMATION) {
         if (settings.introAnimationInit == 0) {
             settings.introAnimationInit = millis();
@@ -542,7 +561,9 @@ private void prepareExitHandler () {
     Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
         public void run () {
             System.out.println("SHUTDOWN HOOK");
-            
+            if (expControlServer != null) {
+                expControlServer.stop();
+            }
             haltSystem();
         }
     }
@@ -750,7 +771,7 @@ public int getCurrentBoardBufferSize() {
 
 /**
 * @description Get the correct points of FFT based on sampling rate
-* @returns `int` - Points of FFT. 125Hz, 200Hz, 250Hz -> 256points. 1000Hz -> 1024points. 1600Hz -> 2048 points.
+* @returns `int` - Points of FFT. 125Hz, 200Hz, 250Hz -> 256points. 1000Hz -> 1024points. 1600Hz, 2000Hz -> 2048 points.
 */
 int getNfftSafe() {
     int sampleRate = currentBoard.getSampleRate();
@@ -760,6 +781,7 @@ int getNfftSafe() {
         case 1000:
             return 1024;
         case 1600:
+        case 2000:
             return 2048;
         case 125:
         case 200:
@@ -781,6 +803,15 @@ void initCoreDataObjects() {
     }
 
     dataProcessing = new DataProcessing(nchan, currentBoard.getSampleRate());
+    lastDataProcessingMillis = millis() - getDataProcessingUpdateMillis();
+    dataProcessingPending = true;
+    dataProcessingGeneration = 0;
+}
+
+int getDataProcessingUpdateMillis() {
+    // 20 Hz is sufficient for plots at 2000 Hz while leaving render frames
+    // between DSP updates. Acquisition and file logging remain full-rate.
+    return currentBoard != null && currentBoard.getSampleRate() >= 1600 ? 50 : UPDATE_MILLIS;
 }
 
 void initFFTObjectsAndBuffer() {
@@ -844,6 +875,74 @@ void stopRunning() {
     }
 }
 
+// ---- Experiment Control (called by ExperimentControlServer on the main thread) ----
+
+/** Start a recording using the experiment session and stage-based file name. */
+String experimentControlStartRecording(String experimentSessionName, String fileName) {
+    if (systemMode != SYSTEMMODE_POSTINIT) {
+        return "ERR:SESSION_NOT_STARTED";
+    }
+    if (!(currentBoard instanceof BoardADS129xTcp)) {
+        return "ERR:ADS1299_NOT_SELECTED";
+    }
+    if (!((BoardADS129xTcp)currentBoard).hasActiveTcpClient()) {
+        return "ERR:ADS1299_NOT_CONNECTED";
+    }
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping current recording before starting '" + fileName + "'");
+        String stopResult = experimentControlStopRecording();
+        if (!stopResult.startsWith("OK:")) {
+            return stopResult;
+        }
+        delay(150);  // Allow the previous stage file to flush and close.
+    }
+
+    dataLogger.setRecordingName(experimentSessionName, fileName);
+    // Follow the same path as the GUI button so top navigation remains in sync.
+    topNav.stopButtonWasPressed();
+    if (!currentBoard.isStreaming() || !settings.isLogFileOpen()) {
+        if (currentBoard.isStreaming()) {
+            topNav.stopButtonWasPressed();
+        }
+        dataLogger.closeExperimentLogFile();
+        return "ERR:START_FAILED";
+    }
+    println("ExpCtrl: Recording started for '" + fileName + "'");
+    return "OK:RECORDING " + fileName;
+}
+
+/** Stop and finalize the current stage recording. */
+String experimentControlStopRecording() {
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping recording");
+        topNav.stopButtonWasPressed();
+    } else {
+        println("ExpCtrl: Not currently recording, STOP ignored");
+    }
+    // ODF closes in stopRunning(); BDF needs explicit finalization per stage.
+    dataLogger.closeExperimentLogFile();
+    if (currentBoard.isStreaming() || settings.isLogFileOpen()) {
+        return "ERR:STOP_FAILED";
+    }
+    return "OK:STOPPED";
+}
+
+/** Return the live state checked by the web page before participant testing. */
+String experimentControlGetStatus() {
+    boolean sessionStarted = systemMode == SYSTEMMODE_POSTINIT;
+    boolean adsSelected = currentBoard instanceof BoardADS129xTcp;
+    boolean adsConnected = adsSelected
+        && ((BoardADS129xTcp)currentBoard).hasActiveTcpClient();
+    boolean streaming = currentBoard != null && currentBoard.isStreaming();
+    boolean recording = settings.isLogFileOpen();
+    return "STATUS"
+        + "|session_started=" + (sessionStarted ? "1" : "0")
+        + "|ads1299_selected=" + (adsSelected ? "1" : "0")
+        + "|ads1299_connected=" + (adsConnected ? "1" : "0")
+        + "|streaming=" + (streaming ? "1" : "0")
+        + "|recording=" + (recording ? "1" : "0");
+}
+
 //halt the data collection
 void haltSystem() {
     if (!systemHasHalted) { //prevents system from halting more than once
@@ -902,6 +1001,11 @@ void systemUpdate() { // for updating data values and variables
 
     currentBoard.update();
 
+    double[][] latestBoardFrame = currentBoard.getFrameData();
+    if (latestBoardFrame != null && latestBoardFrame.length > 0 && latestBoardFrame[0].length > 0) {
+        dataProcessingPending = true;
+    }
+
     dataLogger.update();
 
     helpWidget.update();
@@ -918,7 +1022,12 @@ void systemUpdate() { // for updating data values and variables
         }
     }
     if (systemMode == SYSTEMMODE_POSTINIT) {
-        processNewData();
+        int now = millis();
+        if (dataProcessingPending && now - lastDataProcessingMillis >= getDataProcessingUpdateMillis()) {
+            processNewData();
+            lastDataProcessingMillis = now;
+            dataProcessingPending = false;
+        }
         
         //alternative component listener function (line 177 mouseReleased- 187 frame.addComponentListener) for processing 3,
         //Component listener doesn't seem to work, so staying with this method for now
@@ -993,6 +1102,9 @@ void systemInitSession() {
         } catch (Exception e) {
             e.printStackTrace();
             haltSystem();
+            String detail = e.getMessage();
+            outputError("Failed to start session (" + e.getClass().getSimpleName() + ")" +
+                ((detail == null || detail.length() == 0) ? ". See Console Log for details." : ": " + detail));
         }
         midInitCheck2 = false;
         midInit = false;
@@ -1005,7 +1117,10 @@ void systemInitSession() {
 void updateToNChan(int _nchan) {
     nchan = _nchan;
     settings.slnchan = _nchan; //used in SoftwareSettings.pde only
-    fftBuff = new ddf.minim.analysis.FFT[nchan];  //reinitialize the FFT buffer
+    // Both FFT arrays are sized from the channel count. Recreate both when a
+    // data source changes the GUI from its default 8 channels to 16 channels.
+    fftBuff = new ddf.minim.analysis.FFT[nchan];
+    fftBuffSpectrogram = new ddf.minim.analysis.FFT[nchan];
     println("OpenBCI_GUI: Channel count set to " + str(nchan));
 }
 

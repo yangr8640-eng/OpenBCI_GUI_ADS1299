@@ -52,6 +52,7 @@ import java.net.SocketException;
 import java.util.ArrayList; 
 import java.util.List; 
 import java.util.concurrent.ConcurrentLinkedQueue; 
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.commons.lang3.tuple.Pair; 
 import org.apache.commons.lang3.tuple.ImmutablePair; 
 import brainflow.*; 
@@ -84,6 +85,15 @@ import ddf.minim.analysis.*;
 import brainflow.DataFilter; 
 import brainflow.FilterTypes; 
 import java.io.StringWriter; 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.io.OutputStream; 
 import java.io.PrintStream; 
 import java.util.prefs.Preferences; 
@@ -93,7 +103,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern; 
 import java.awt.Frame; 
 import processing.awt.PSurfaceAWT; 
-import java.util.Stack; 
+import java.util.AbstractList;
+import java.util.Arrays;
 import java.awt.Toolkit; 
 import java.awt.datatransfer.Clipboard; 
 import java.awt.datatransfer.ClipboardOwner; 
@@ -267,6 +278,7 @@ int nextPlayback_millis = -100; //any negative number
 DataSource currentBoard = new BoardNull();
 
 DataLogger dataLogger = new DataLogger();
+ExperimentControlServer expControlServer;
 
 // Intialize interface protocols
 InterfaceSerial iSerial = new InterfaceSerial(); //This is messy, half-deprecated code. See comments in InterfaceSerial.pde - Nov. 2020
@@ -296,6 +308,9 @@ CytonSDMode cyton_sdSetting = CytonSDMode.NO_WRITE;
 // The sampling rate should be ideally a multiple of 25, so as to make actual buffer update rate exactly 40ms
 final int UPDATE_MILLIS = 40;
 int nPointsPerUpdate;   // no longer final, calculate every time in initSystem
+int lastDataProcessingMillis = -UPDATE_MILLIS;
+boolean dataProcessingPending = true;
+long dataProcessingGeneration = 0;
 
 //define some data fields for handling data here in processing
 float dataProcessingRawBuffer[][]; //2D array to handle multiple data channels, each row is a new channel so that dataBuffY[3][] is channel 4
@@ -536,6 +551,13 @@ public void setup() {
     }
     
     directoryManager = new DirectoryManager();
+    if (!directoryManager.init()) {
+        showStartupError = true;
+        startupErrorMessage = "OpenBCI GUI could not create its data directory.\n\n" +
+            directoryManager.getGuiDataPath() + "\n\n" +
+            "Set OPENBCI_GUI_DATA_DIR to a writable directory and relaunch the application.";
+        return;
+    }
 
     // redirect all output to a custom stream that will intercept all prints
     // write them to file and display them in the GUI's console window
@@ -570,8 +592,6 @@ public void setup() {
     println("Welcome to the Processing-based OpenBCI GUI!"); //Welcome line.
     println("For more information, please visit: https://docs.openbci.com/Software/OpenBCISoftware/GUIDocs/");
     
-    // Copy sample data to the Users' Documents folder +  create Recordings folder
-    directoryManager.init();
     settings = new SessionSettings();
     guiSettings = new GuiSettings(directoryManager.getSettingsPath());
     userPlaybackHistoryFile = directoryManager.getSettingsPath()+"UserPlaybackHistory.json";
@@ -643,6 +663,11 @@ public void delayedSetup() {
     //Apply GUI-wide settings to front end at the end of setup
     guiSettings.applySettings();
 
+    // Start the loopback-only experiment control server so the web experiment
+    // can start and stop stage recordings with deterministic file names.
+    expControlServer = new ExperimentControlServer(1236);
+    expControlServer.start();
+
     if (!isAdminUser() || isElevationNeeded()) {
         outputError("OpenBCI_GUI: This application is not being run with Administrator access. This could limit the ability to connect to devices or read/write files.");
     }
@@ -671,6 +696,11 @@ public synchronized void draw() {
         if (systemMode == SYSTEMMODE_POSTINIT) {
             w_networking.compareAndSetNetworkingFrameLocks();
         }
+        // Execute queued network commands on Processing's main thread because
+        // GUI and DataLogger operations are not thread-safe.
+        if (expControlServer != null) {
+            expControlServer.checkCommands();
+        }
     } else if (systemMode == SYSTEMMODE_INTROANIMATION) {
         if (settings.introAnimationInit == 0) {
             settings.introAnimationInit = millis();
@@ -687,7 +717,9 @@ private void prepareExitHandler () {
     Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
         public void run () {
             System.out.println("SHUTDOWN HOOK");
-            
+            if (expControlServer != null) {
+                expControlServer.stop();
+            }
             haltSystem();
         }
     }
@@ -895,7 +927,7 @@ public int getCurrentBoardBufferSize() {
 
 /**
 * @description Get the correct points of FFT based on sampling rate
-* @returns `int` - Points of FFT. 125Hz, 200Hz, 250Hz -> 256points. 1000Hz -> 1024points. 1600Hz -> 2048 points.
+* @returns `int` - Points of FFT. 125Hz, 200Hz, 250Hz -> 256points. 1000Hz -> 1024points. 1600Hz, 2000Hz -> 2048 points.
 */
 public int getNfftSafe() {
     int sampleRate = currentBoard.getSampleRate();
@@ -905,6 +937,7 @@ public int getNfftSafe() {
         case 1000:
             return 1024;
         case 1600:
+        case 2000:
             return 2048;
         case 125:
         case 200:
@@ -926,6 +959,15 @@ public void initCoreDataObjects() {
     }
 
     dataProcessing = new DataProcessing(nchan, currentBoard.getSampleRate());
+    lastDataProcessingMillis = millis() - getDataProcessingUpdateMillis();
+    dataProcessingPending = true;
+    dataProcessingGeneration = 0;
+}
+
+public int getDataProcessingUpdateMillis() {
+    // 20 Hz is sufficient for plots at 2000 Hz while leaving render frames
+    // between DSP updates. Acquisition and file logging remain full-rate.
+    return currentBoard != null && currentBoard.getSampleRate() >= 1600 ? 50 : UPDATE_MILLIS;
 }
 
 public void initFFTObjectsAndBuffer() {
@@ -989,6 +1031,74 @@ public void stopRunning() {
     }
 }
 
+// ---- Experiment Control (called by ExperimentControlServer on the main thread) ----
+
+/** Start a recording using the experiment session and stage-based file name. */
+public String experimentControlStartRecording(String experimentSessionName, String fileName) {
+    if (systemMode != SYSTEMMODE_POSTINIT) {
+        return "ERR:SESSION_NOT_STARTED";
+    }
+    if (!(currentBoard instanceof BoardADS129xTcp)) {
+        return "ERR:ADS1299_NOT_SELECTED";
+    }
+    if (!((BoardADS129xTcp)currentBoard).hasActiveTcpClient()) {
+        return "ERR:ADS1299_NOT_CONNECTED";
+    }
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping current recording before starting '" + fileName + "'");
+        String stopResult = experimentControlStopRecording();
+        if (!stopResult.startsWith("OK:")) {
+            return stopResult;
+        }
+        delay(150);  // Allow the previous stage file to flush and close.
+    }
+
+    dataLogger.setRecordingName(experimentSessionName, fileName);
+    // Follow the same path as the GUI button so top navigation remains in sync.
+    topNav.stopButtonWasPressed();
+    if (!currentBoard.isStreaming() || !settings.isLogFileOpen()) {
+        if (currentBoard.isStreaming()) {
+            topNav.stopButtonWasPressed();
+        }
+        dataLogger.closeExperimentLogFile();
+        return "ERR:START_FAILED";
+    }
+    println("ExpCtrl: Recording started for '" + fileName + "'");
+    return "OK:RECORDING " + fileName;
+}
+
+/** Stop and finalize the current stage recording. */
+public String experimentControlStopRecording() {
+    if (currentBoard.isStreaming()) {
+        println("ExpCtrl: Stopping recording");
+        topNav.stopButtonWasPressed();
+    } else {
+        println("ExpCtrl: Not currently recording, STOP ignored");
+    }
+    // ODF closes in stopRunning(); BDF needs explicit finalization per stage.
+    dataLogger.closeExperimentLogFile();
+    if (currentBoard.isStreaming() || settings.isLogFileOpen()) {
+        return "ERR:STOP_FAILED";
+    }
+    return "OK:STOPPED";
+}
+
+/** Return the live state checked by the web page before participant testing. */
+public String experimentControlGetStatus() {
+    boolean sessionStarted = systemMode == SYSTEMMODE_POSTINIT;
+    boolean adsSelected = currentBoard instanceof BoardADS129xTcp;
+    boolean adsConnected = adsSelected
+        && ((BoardADS129xTcp)currentBoard).hasActiveTcpClient();
+    boolean streaming = currentBoard != null && currentBoard.isStreaming();
+    boolean recording = settings.isLogFileOpen();
+    return "STATUS"
+        + "|session_started=" + (sessionStarted ? "1" : "0")
+        + "|ads1299_selected=" + (adsSelected ? "1" : "0")
+        + "|ads1299_connected=" + (adsConnected ? "1" : "0")
+        + "|streaming=" + (streaming ? "1" : "0")
+        + "|recording=" + (recording ? "1" : "0");
+}
+
 //halt the data collection
 public void haltSystem() {
     if (!systemHasHalted) { //prevents system from halting more than once
@@ -1047,6 +1157,11 @@ public void systemUpdate() { // for updating data values and variables
 
     currentBoard.update();
 
+    double[][] latestBoardFrame = currentBoard.getFrameData();
+    if (latestBoardFrame != null && latestBoardFrame.length > 0 && latestBoardFrame[0].length > 0) {
+        dataProcessingPending = true;
+    }
+
     dataLogger.update();
 
     helpWidget.update();
@@ -1063,7 +1178,12 @@ public void systemUpdate() { // for updating data values and variables
         }
     }
     if (systemMode == SYSTEMMODE_POSTINIT) {
-        processNewData();
+        int now = millis();
+        if (dataProcessingPending && now - lastDataProcessingMillis >= getDataProcessingUpdateMillis()) {
+            processNewData();
+            lastDataProcessingMillis = now;
+            dataProcessingPending = false;
+        }
         
         //alternative component listener function (line 177 mouseReleased- 187 frame.addComponentListener) for processing 3,
         //Component listener doesn't seem to work, so staying with this method for now
@@ -1138,6 +1258,9 @@ public void systemInitSession() {
         } catch (Exception e) {
             e.printStackTrace();
             haltSystem();
+            String detail = e.getMessage();
+            outputError("Failed to start session (" + e.getClass().getSimpleName() + ")" +
+                ((detail == null || detail.length() == 0) ? ". See Console Log for details." : ": " + detail));
         }
         midInitCheck2 = false;
         midInit = false;
@@ -1150,7 +1273,10 @@ public void systemInitSession() {
 public void updateToNChan(int _nchan) {
     nchan = _nchan;
     settings.slnchan = _nchan; //used in SoftwareSettings.pde only
-    fftBuff = new ddf.minim.analysis.FFT[nchan];  //reinitialize the FFT buffer
+    // Both FFT arrays are sized from the channel count. Recreate both when a
+    // data source changes the GUI from its default 8 channels to 16 channels.
+    fftBuff = new ddf.minim.analysis.FFT[nchan];
+    fftBuffSpectrogram = new ddf.minim.analysis.FFT[nchan];
     println("OpenBCI_GUI: Channel count set to " + str(nchan));
 }
 
@@ -2474,6 +2600,7 @@ abstract class Board implements DataSource {
 
 
 
+
 class BoardADS129xTcp extends Board {
     private static final int NUM_EXG_CHANNELS = 16;
     private static final int TOTAL_CHANNELS = 21;
@@ -2493,6 +2620,7 @@ class BoardADS129xTcp extends Board {
     private final int[] exgChannels = new int[NUM_EXG_CHANNELS];
     private final boolean[] activeChannels = new boolean[NUM_EXG_CHANNELS];
     private final ConcurrentLinkedQueue<double[]> sampleQueue = new ConcurrentLinkedQueue<double[]>();
+    private final AtomicInteger queuedSampleCount = new AtomicInteger(0);
     private final ConcurrentLinkedQueue<String> warningQueue = new ConcurrentLinkedQueue<String>();
     private final ADS129xTcpParser parser = new ADS129xTcpParser();
 
@@ -2561,6 +2689,7 @@ class BoardADS129xTcp extends Board {
             serverThread = null;
         }
         sampleQueue.clear();
+        queuedSampleCount.set(0);
         connected = false;
     }
 
@@ -2568,6 +2697,7 @@ class BoardADS129xTcp extends Board {
     public void startStreaming() {
         super.startStreaming();
         sampleQueue.clear();
+        queuedSampleCount.set(0);
         warningQueue.clear();
         synchronized(parser) {
             parser.reset();
@@ -2588,6 +2718,7 @@ class BoardADS129xTcp extends Board {
         super.stopStreaming();
         streaming = false;
         sampleQueue.clear();
+        queuedSampleCount.set(0);
     }
 
     @Override
@@ -2607,6 +2738,7 @@ class BoardADS129xTcp extends Board {
         List<double[]> samples = new ArrayList<double[]>();
         double[] row = sampleQueue.poll();
         while (row != null) {
+            queuedSampleCount.decrementAndGet();
             samples.add(row);
             row = sampleQueue.poll();
         }
@@ -2633,6 +2765,12 @@ class BoardADS129xTcp extends Board {
     @Override
     public boolean isConnected() {
         return serverSocket != null && !serverSocket.isClosed();
+    }
+
+    /** True only while the physical ADS1299 TCP client is attached. */
+    public boolean hasActiveTcpClient() {
+        Socket socket = clientSocket;
+        return connected && socket != null && socket.isConnected() && !socket.isClosed();
     }
 
     @Override
@@ -2800,9 +2938,10 @@ class BoardADS129xTcp extends Board {
             row[MARKER_CHANNEL] = pendingMarker;
             pendingMarker = 0.0f;
             sampleQueue.add(row);
+            queuedSampleCount.incrementAndGet();
             outputSampleCounter++;
-            trimQueueIfNeeded();
         }
+        trimQueueIfNeeded();
     }
 
     private void trackFrameSequence(long sequence) {
@@ -2819,9 +2958,13 @@ class BoardADS129xTcp extends Board {
 
     private void trimQueueIfNeeded() {
         int maxQueuedSamples = max(sampleRate * 10, sampleRate);
-        if (sampleQueue.size() > maxQueuedSamples) {
-            while (sampleQueue.size() > maxQueuedSamples) {
-                sampleQueue.poll();
+        if (queuedSampleCount.get() > maxQueuedSamples) {
+            while (queuedSampleCount.get() > maxQueuedSamples) {
+                if (sampleQueue.poll() == null) {
+                    queuedSampleCount.set(0);
+                    break;
+                }
+                queuedSampleCount.decrementAndGet();
             }
             if (!queueOverflowWarned) {
                 warningQueue.add("ADS1299 sample queue overflow; old samples were dropped.");
@@ -2837,7 +2980,7 @@ class BoardADS129xTcp extends Board {
     }
 
     private boolean isSupportedSampleRate(int rate) {
-        return rate == 250 || rate == 500 || rate == 1000;
+        return rate == 250 || rate == 500 || rate == 1000 || rate == 2000;
     }
 
     private void closeServerSocket() {
@@ -8031,6 +8174,7 @@ class ADS129xConfigBox {
     private Button sampleRate250;
     private Button sampleRate500;
     private Button sampleRate1000;
+    private Button sampleRate2000;
     private int selectedRate = 250;
 
     ADS129xConfigBox(int _x, int _y, int _w, int _h, int _padding) {
@@ -8062,11 +8206,12 @@ class ADS129xConfigBox {
             .onDoublePress(cb)
             .setAutoClear(false);
 
-        int buttonWidth = (w - padding*4) / 3;
+        int buttonWidth = (w - padding*5) / 4;
         int buttonY = portY + objectH + padding + labelH;
         sampleRate250 = createSampleRateButton("ads129xSR250", "250Hz", x + padding, buttonY, buttonWidth, objectH, 250);
         sampleRate500 = createSampleRateButton("ads129xSR500", "500Hz", x + padding*2 + buttonWidth, buttonY, buttonWidth, objectH, 500);
         sampleRate1000 = createSampleRateButton("ads129xSR1000", "1000Hz", x + padding*3 + buttonWidth*2, buttonY, buttonWidth, objectH, 1000);
+        sampleRate2000 = createSampleRateButton("ads129xSR2000", "2000Hz", x + padding*4 + buttonWidth*3, buttonY, buttonWidth, objectH, 2000);
         setSampleRateInternal(250, false);
     }
 
@@ -8117,7 +8262,7 @@ class ADS129xConfigBox {
     }
 
     private void setSampleRateInternal(int rate, boolean updateGlobalSampleRate) {
-        if (rate != 250 && rate != 500 && rate != 1000) {
+        if (rate != 250 && rate != 500 && rate != 1000 && rate != 2000) {
             rate = 250;
         }
         selectedRate = rate;
@@ -8125,18 +8270,18 @@ class ADS129xConfigBox {
             selectedSamplingRate = rate;
         }
         if (sampleRate250 != null) {
+            sampleRate250.setOff();
+            sampleRate500.setOff();
+            sampleRate1000.setOff();
+            sampleRate2000.setOff();
             if (rate == 250) {
                 sampleRate250.setOn();
-                sampleRate500.setOff();
-                sampleRate1000.setOff();
             } else if (rate == 500) {
-                sampleRate250.setOff();
                 sampleRate500.setOn();
-                sampleRate1000.setOff();
-            } else {
-                sampleRate250.setOff();
-                sampleRate500.setOff();
+            } else if (rate == 1000) {
                 sampleRate1000.setOn();
+            } else {
+                sampleRate2000.setOn();
             }
         }
     }
@@ -9701,6 +9846,7 @@ class DataLogger {
     public final int OUTPUT_SOURCE_ODF = 1; // The OpenBCI CSV Data Format
     public final int OUTPUT_SOURCE_BDF = 2; // The BDF data format http://www.biosemi.com/faq/file_format.htm
     private int outputDataSource;
+    private String customRecordingName = null;
 
     DataLogger() {
         //Default to OpenBCI CSV Data Format
@@ -9757,6 +9903,27 @@ class DataLogger {
         }
     }
 
+    /** Set a custom recording name for the next log file. */
+    public void setRecordingName(String name) {
+        setRecordingName(name, name);
+    }
+
+    /** Use one experiment folder while giving every stage its own file name. */
+    public void setRecordingName(String experimentSessionName, String fileName) {
+        customRecordingName = fileName;
+        setSessionName(experimentSessionName);
+        settings.setSessionPath(
+            directoryManager.getRecordingsPath()
+            + "OpenBCISession_" + experimentSessionName + File.separator
+        );
+        println("DataLogger: Recording name set to '" + fileName
+            + "' in session '" + experimentSessionName + "'");
+    }
+
+    public String getRecordingName() {
+        return customRecordingName;
+    }
+
     public void onStartStreaming() {
         if (outputDataSource > OUTPUT_SOURCE_NONE && eegDataSource != DATASOURCE_PLAYBACKFILE) {
             //open data file if it has not already been opened
@@ -9799,7 +9966,9 @@ class DataLogger {
                 openNewLogFileODF(_fileName);
                 break;
             case OUTPUT_SOURCE_BDF:
-                openNewLogFileBDF(_fileName);
+                String bdfFileName = customRecordingName != null ? customRecordingName : _fileName;
+                openNewLogFileBDF(bdfFileName);
+                customRecordingName = null;
                 break;
             case OUTPUT_SOURCE_NONE:
             default:
@@ -9836,12 +10005,22 @@ class DataLogger {
             println("OpenBCI_GUI: closing log file");
             closeLogFile();
         }
-        //open the new file
-        fileWriterODF = new DataWriterODF(sessionName, _fileName);
-        if (currentBoard instanceof AuxDataBoard) {
-            if (fileWriterAuxODF != null)
-                fileWriterAuxODF.closeFile();
-            fileWriterAuxODF = new DataWriterAuxODF(sessionName, _fileName);
+        if (customRecordingName != null) {
+            println("DataLogger: Using custom recording name: " + customRecordingName);
+            fileWriterODF = new DataWriterODF(sessionName, customRecordingName, true);
+            if (currentBoard instanceof AuxDataBoard) {
+                if (fileWriterAuxODF != null)
+                    fileWriterAuxODF.closeFile();
+                fileWriterAuxODF = new DataWriterAuxODF(sessionName, customRecordingName, true);
+            }
+            customRecordingName = null;
+        } else {
+            fileWriterODF = new DataWriterODF(sessionName, _fileName);
+            if (currentBoard instanceof AuxDataBoard) {
+                if (fileWriterAuxODF != null)
+                    fileWriterAuxODF.closeFile();
+                fileWriterAuxODF = new DataWriterAuxODF(sessionName, _fileName);
+            }
         }
 
         output_fname = fileWriterODF.fname;
@@ -9862,6 +10041,13 @@ class DataLogger {
                 break;
         }
         settings.setLogFileIsOpen(false);
+    }
+
+    /** Close and finalize the current file, including BDF experiment files. */
+    public void closeExperimentLogFile() {
+        if (settings.isLogFileOpen()) {
+            closeLogFile();
+        }
     }
 
     /**
@@ -9941,20 +10127,26 @@ public void processNewData() {
     List<double[]> currentData = currentBoard.getData(getCurrentBoardBufferSize());
     int[] exgChannels = currentBoard.getEXGChannels();
     int channelCount = currentBoard.getNumEXGChannels();
+    int bufferSize = dataProcessingRawBuffer[0].length;
 
-    //update the data buffers
-    for (int Ichan=0; Ichan < channelCount; Ichan++) {
-        for(int i = 0; i < getCurrentBoardBufferSize(); i++) {
-            dataProcessingRawBuffer[Ichan][i] = (float)currentData.get(i)[exgChannels[Ichan]];
+    // Read each row once. This is especially important for the circular history
+    // buffer, and avoids doing one synchronized list lookup per channel.
+    for (int i = 0; i < bufferSize; i++) {
+        double[] row = currentData.get(i);
+        for (int Ichan = 0; Ichan < channelCount; Ichan++) {
+            dataProcessingRawBuffer[Ichan][i] = (float)row[exgChannels[Ichan]];
         }
-
-        dataProcessingFilteredBuffer[Ichan] = dataProcessingRawBuffer[Ichan].clone();
+    }
+    for (int Ichan = 0; Ichan < channelCount; Ichan++) {
+        System.arraycopy(dataProcessingRawBuffer[Ichan], 0,
+                         dataProcessingFilteredBuffer[Ichan], 0, bufferSize);
     }
 
     //apply additional processing for the time-domain montage plot (ie, filtering)
     dataProcessing.process(dataProcessingFilteredBuffer, fftBuff);
 
     dataProcessing.newDataToSend = true;
+    dataProcessingGeneration++;
 
     //look to see if the latest data is railed so that we can notify the user on the GUI
     for (int Ichan=0; Ichan < nchan; Ichan++) is_railed[Ichan].update(dataProcessingRawBuffer[Ichan], Ichan);
@@ -9973,6 +10165,18 @@ public void processNewData() {
         // Store to the global variable
         data_elec_imp_ohm[Ichan] = impedance;
     }
+}
+
+// Only the visible Time Series duration needs a fully filtered history. Two
+// preceding seconds are retained as filter warm-up, matching dataBuff_len_sec.
+public int getDataProcessingSampleCount() {
+    int visibleSeconds = 5;
+    if (w_timeSeries != null && w_timeSeries.getTSHorizScale() != null) {
+        visibleSeconds = w_timeSeries.getTSHorizScale().getValue();
+    }
+    int samples = (visibleSeconds + 2) * currentBoard.getSampleRate();
+    samples = max(samples, getNfftSafe());
+    return min(samples, getCurrentBoardBufferSize());
 }
 
 public void initializeFFTObjects(ddf.minim.analysis.FFT[] fftBuff, float[][] dataProcessingRawBuffer, int Nfft, float fs_Hz) {
@@ -10011,6 +10215,9 @@ class DataProcessing {
     };  //upper bound for each frequency band of interest
     float avgPowerInBins[][];
     float headWidePower[];
+    private double[][] filterScratch;
+    private float[] fftWorkBuffer;
+    private float[] prevFFTdata;
 
     public EmgSettings emgSettings;
 
@@ -10022,6 +10229,9 @@ class DataProcessing {
         newDataToSend = false;
         avgPowerInBins = new float[nchan][processing_band_low_Hz.length];
         headWidePower = new float[processing_band_low_Hz.length];
+        filterScratch = new double[nchan][];
+        fftWorkBuffer = new float[getNfftSafe()];
+        prevFFTdata = new float[getNfftSafe()/2 + 1];
 
         emgSettings = new EmgSettings();
     }
@@ -10035,7 +10245,15 @@ class DataProcessing {
         // TODO: Use double arrays here and convert to float only to plot data.
         // ^^^ This might not feasible or meaningful performance improvement. I looked into it a while ago and it seems we need floats for the FFT library also. -RW 2022)
         try {
-            double[] tempArray = floatToDoubleArray(data_forDisplay_uV[Ichan]);
+            int samplesToFilter = min(getDataProcessingSampleCount(), data_forDisplay_uV[Ichan].length);
+            int filterStart = data_forDisplay_uV[Ichan].length - samplesToFilter;
+            if (filterScratch[Ichan] == null || filterScratch[Ichan].length != samplesToFilter) {
+                filterScratch[Ichan] = new double[samplesToFilter];
+            }
+            double[] tempArray = filterScratch[Ichan];
+            for (int i = 0; i < samplesToFilter; i++) {
+                tempArray[i] = data_forDisplay_uV[Ichan][filterStart + i];
+            }
             
             //Apply BandStop filter if the filter should be active on this channel
             if (filterSettings.values.bandStopFilterActive[Ichan].isActive()) {
@@ -10089,15 +10307,15 @@ class DataProcessing {
                     break;
             }
 
-            doubleToFloatArray(tempArray, data_forDisplay_uV[Ichan]);
+            for (int i = 0; i < samplesToFilter; i++) {
+                data_forDisplay_uV[Ichan][filterStart + i] = (float)tempArray[i];
+            }
         } catch (BrainFlowError e) {
             e.printStackTrace();
         }
 
         //compute the standard deviation of the filtered signal...this is for the head plot
-        float[] fooData_filt = dataProcessingFilteredBuffer[Ichan];  //use the filtered data
-        fooData_filt = Arrays.copyOfRange(fooData_filt, fooData_filt.length-((int)fs_Hz), fooData_filt.length);   //just grab the most recent second of data
-        data_std_uV[Ichan]=std(fooData_filt); //compute the standard deviation for the whole array "fooData_filt"
+        data_std_uV[Ichan] = stdTail(dataProcessingFilteredBuffer[Ichan], (int)fs_Hz);
 
         //copy the previous FFT data...enables us to apply some smoothing to the FFT data
         for (int I=0; I < fftBuff[Ichan].specSize(); I++) {
@@ -10105,18 +10323,23 @@ class DataProcessing {
         }
 
         //prepare the data for the new FFT
-        float[] fooData;
+        float[] sourceData;
         if (isFFTFiltered == true) {
-            fooData = dataProcessingFilteredBuffer[Ichan];  //use the filtered data for the FFT
+            sourceData = dataProcessingFilteredBuffer[Ichan];  //use the filtered data for the FFT
         } else {
-            fooData = dataProcessingRawBuffer[Ichan];  //use the raw data for the FFT
+            sourceData = dataProcessingRawBuffer[Ichan];  //use the raw data for the FFT
         }
-        fooData = Arrays.copyOfRange(fooData, fooData.length-Nfft, fooData.length);   //trim to grab just the most recent block of data
-        float meanData = mean(fooData);  //compute the mean
-        for (int I=0; I < fooData.length; I++) fooData[I] -= meanData; //remove the mean (for a better looking FFT
+        int fftStart = sourceData.length - Nfft;
+        float meanData = 0;
+        for (int I = 0; I < Nfft; I++) {
+            fftWorkBuffer[I] = sourceData[fftStart + I];
+            meanData += fftWorkBuffer[I];
+        }
+        meanData /= Nfft;
+        for (int I = 0; I < Nfft; I++) fftWorkBuffer[I] -= meanData;
 
         //compute the FFT
-        fftBuff[Ichan].forward(fooData); //compute FFT on this channel of data
+        fftBuff[Ichan].forward(fftWorkBuffer); //compute FFT on this channel of data
 
         // FFT ref: https://www.mathworks.com/help/matlab/ref/fft.html
         // first calculate double-sided FFT amplitude spectrum
@@ -10156,32 +10379,27 @@ class DataProcessing {
         // when i = 1 ~ (N/2-1), psd = (N / fs) * mag(i)^2 / 4
         // when i = 0 or i = N/2, psd = (N / fs) * mag(i)^2
 
-        for (int i = 0; i < processing_band_low_Hz.length; i++) {
-            float sum = 0;
-            // int binNum = 0;
-            for (int Ibin = 0; Ibin <= Nfft/2; Ibin ++) { // loop over FFT bins
-                float FFT_freq_Hz = fftBuff[Ichan].indexToFreq(Ibin);   // center frequency of this bin
-                float psdx = 0;
-                // if the frequency matches a band
-                if (FFT_freq_Hz >= processing_band_low_Hz[i] && FFT_freq_Hz < processing_band_high_Hz[i]) {
+        Arrays.fill(avgPowerInBins[Ichan], 0);
+        for (int Ibin = 0; Ibin <= Nfft/2; Ibin++) {
+            float FFT_freq_Hz = fftBuff[Ichan].indexToFreq(Ibin);
+            if (FFT_freq_Hz >= processing_band_high_Hz[processing_band_high_Hz.length - 1]) {
+                break;
+            }
+            for (int band = 0; band < processing_band_low_Hz.length; band++) {
+                if (FFT_freq_Hz >= processing_band_low_Hz[band] && FFT_freq_Hz < processing_band_high_Hz[band]) {
+                    float amplitude = fftBuff[Ichan].getBand(Ibin);
+                    float psdx = amplitude * amplitude * Nfft / currentBoard.getSampleRate();
                     if (Ibin != 0 && Ibin != Nfft/2) {
-                        psdx = fftBuff[Ichan].getBand(Ibin) * fftBuff[Ichan].getBand(Ibin) * Nfft/currentBoard.getSampleRate() / 4;
+                        psdx /= 4;
                     }
-                    else {
-                        psdx = fftBuff[Ichan].getBand(Ibin) * fftBuff[Ichan].getBand(Ibin) * Nfft/currentBoard.getSampleRate();
-                    }
-                    sum += psdx;
-                    // binNum ++;
+                    avgPowerInBins[Ichan][band] += psdx;
+                    break;
                 }
             }
-            avgPowerInBins[Ichan][i] = sum;   // total power in a band
-            // println(i, binNum, sum);
         }
     }
 
     public void process(float[][] data_forDisplay_uV, ddf.minim.analysis.FFT[] fftData) {              //holds the FFT (frequency spectrum) of the latest data
-
-        float prevFFTdata[] = new float[fftBuff[0].specSize()];
 
         for (int Ichan=0; Ichan < nchan; Ichan++) { 
             processChannel(Ichan, data_forDisplay_uV, prevFFTdata);
@@ -10199,15 +10417,10 @@ class DataProcessing {
         //find strongest channel
         int refChanInd = findMax(data_std_uV);
         //println("EEG_Processing: strongest chan (one referenced) = " + (refChanInd+1));
-        float[] refData_uV = dataProcessingFilteredBuffer[refChanInd];  //use the filtered data
-        refData_uV = Arrays.copyOfRange(refData_uV, refData_uV.length-((int)fs_Hz), refData_uV.length);   //just grab the most recent second of data
-
-
         //compute polarity of each channel
+        float[] refData_uV = dataProcessingFilteredBuffer[refChanInd];
         for (int Ichan=0; Ichan < nchan; Ichan++) {
-            float[] fooData_filt = dataProcessingFilteredBuffer[Ichan];  //use the filtered data
-            fooData_filt = Arrays.copyOfRange(fooData_filt, fooData_filt.length-((int)fs_Hz), fooData_filt.length);   //just grab the most recent second of data
-            float dotProd = calcDotProduct(fooData_filt, refData_uV);
+            float dotProd = calcDotProductTail(dataProcessingFilteredBuffer[Ichan], refData_uV, (int)fs_Hz);
             if (dotProd >= 0.0f) {
                 polarity[Ichan]=1.0f;
             } else {
@@ -10217,6 +10430,32 @@ class DataProcessing {
 
         //Compute EMG values independent of widgets
         emgSettings.values.process(dataProcessingFilteredBuffer);
+    }
+
+    private float stdTail(float[] data, int count) {
+        int samples = min(count, data.length);
+        int start = data.length - samples;
+        float average = 0;
+        for (int i = start; i < data.length; i++) average += data[i];
+        average /= samples;
+
+        float variance = 0;
+        for (int i = start; i < data.length; i++) {
+            float delta = data[i] - average;
+            variance += delta * delta;
+        }
+        return (float)Math.sqrt(variance / samples);
+    }
+
+    private float calcDotProductTail(float[] data1, float[] data2, int count) {
+        int samples = min(count, min(data1.length, data2.length));
+        int start1 = data1.length - samples;
+        int start2 = data2.length - samples;
+        float value = 0;
+        for (int i = 0; i < samples; i++) {
+            value += data1[start1 + i] * data2[start2 + i];
+        }
+        return value;
     }
 }
 
@@ -11131,6 +11370,10 @@ public class DataWriterAuxODF extends DataWriterODF {
     //variation on constructor to have custom name
     DataWriterAuxODF(String _sessionName, String _fileName) {
         super(_sessionName, _fileName);
+    }
+
+    DataWriterAuxODF(String _sessionName, String _fileName, boolean useAsCompleteName) {
+        super(_sessionName, _fileName, useAsCompleteName);
     }
     
     protected int getNumberOfChannels() {
@@ -12296,12 +12539,21 @@ public class DataWriterODF {
     protected String fileNamePrependString = "OpenBCI-RAW-";
     protected String headerFirstLineString = "%OpenBCI Raw EXG Data";
 
-    //variation on constructor to have custom name
+    // Standard constructor: uses the "OpenBCI-RAW-<fileName>.txt" pattern.
     DataWriterODF(String _sessionName, String _fileName) {
+        this(_sessionName, _fileName, false);
+    }
+
+    // When useAsCompleteName is true, _fileName is the complete base name.
+    DataWriterODF(String _sessionName, String _fileName, boolean useAsCompleteName) {
         settings.setSessionPath(directoryManager.getRecordingsPath() + "OpenBCISession_" + _sessionName + File.separator);
         fname = settings.getSessionPath();
-        fname += fileNamePrependString;
-        fname += _fileName;
+        if (useAsCompleteName) {
+            fname += _fileName;
+        } else {
+            fname += fileNamePrependString;
+            fname += _fileName;
+        }
         fname += ".txt";
         output = createWriter(fname);        //open the file
         writeHeader();    //add the header
@@ -12570,7 +12822,11 @@ public void output(String _output) {
 }
 
 public void output(String _output, OutputLevel level) {
-    helpWidget.output(_output, level);
+    if (helpWidget != null) {
+        helpWidget.output(_output, level);
+    } else {
+        println("[" + level.name() + "]: " + _output);
+    }
 }
 
 public void outputError(String _output) {
@@ -12620,14 +12876,38 @@ interface DigitalCapableBoard {
 };
 class DirectoryManager {
 
-    private final String guiDataPath = "D:"+File.separator+"OpenBCI_GUI_ADS1299"+File.separator+"UserData"+File.separator;
-    private final String recordingsPath = guiDataPath+"Recordings"+File.separator;
-    private final String settingsPath = guiDataPath+"Settings"+File.separator;
-    private final String consoleDataPath = guiDataPath+"Console_Data"+File.separator;
+    private final String guiDataPath;
+    private final String recordingsPath;
+    private final String settingsPath;
+    private final String consoleDataPath;
     private final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss");
 
     DirectoryManager() {
+        String configuredPath = System.getenv("OPENBCI_GUI_DATA_DIR");
 
+        if (configuredPath == null || configuredPath.trim().isEmpty()) {
+            File legacyDataDirectory = new File(
+                "D:" + File.separator + "OpenBCI_GUI_ADS1299" + File.separator + "UserData"
+            );
+            if (legacyDataDirectory.isDirectory()) {
+                configuredPath = legacyDataDirectory.getAbsolutePath();
+            } else {
+                String localAppData = System.getenv("LOCALAPPDATA");
+                if (localAppData == null || localAppData.trim().isEmpty()) {
+                    localAppData = System.getProperty("user.home");
+                }
+
+                configuredPath = new File(
+                    localAppData,
+                    "OpenBCI_GUI_ADS1299" + File.separator + "UserData"
+                ).getAbsolutePath();
+            }
+        }
+
+        guiDataPath = new File(configuredPath).getAbsolutePath() + File.separator;
+        recordingsPath = guiDataPath + "Recordings" + File.separator;
+        settingsPath = guiDataPath + "Settings" + File.separator;
+        consoleDataPath = guiDataPath + "Console_Data" + File.separator;
     }
 
     public String getFileNameDateTime() {
@@ -12650,12 +12930,26 @@ class DirectoryManager {
         return consoleDataPath;
     }
 
-    public void init() {
-        // Create GUI data folder and copy sample data if it doesn't already exist
-        String directoryName = guiDataPath + File.separator + "Sample_Data" + File.separator;
+    public boolean init() {
+        String directoryName = guiDataPath + "Sample_Data" + File.separator;
+        File directory = new File(directoryName);
+        File[] requiredDirectories = {
+            new File(guiDataPath),
+            new File(recordingsPath),
+            new File(settingsPath),
+            new File(consoleDataPath),
+            directory
+        };
+
+        for (File requiredDirectory : requiredDirectories) {
+            if (!ensureDirectory(requiredDirectory)) {
+                println("OpenBCI_GUI::Setup: Unable to create data directory: " + requiredDirectory.getAbsolutePath());
+                return false;
+            }
+        }
+
         String guiv4fileName = directoryName + "OpenBCI-sampleData-2-meditation.txt";
         String guiv5fileName = directoryName + "OpenBCI_GUI-v5-meditation.txt";
-        File directory = new File(directoryName);
         File guiv4_fileToCheck = new File(guiv4fileName);
         File guiv5_fileToCheck = new File(guiv5fileName);
 
@@ -12677,16 +12971,18 @@ class DirectoryManager {
             println("OpenBCI_GUI::Setup: GUI v5 Sample Data exists.");
         }
 
-        makeRecordingsFolder();
+        return true;
     }
 
     private void copySampleDataFiles(File directory, String directoryName) {
         println("OpenBCI_GUI::Setup: Copying sample data to " + guiDataPath + "Sample_Data");
-        // Make the entire directory path including parents
-        directory.mkdirs();
         try {
             File[] filesFound = new File(dataPath("EEG_Sample_Data")).listFiles();
-            //If this pathname does not denote a directory, then listFiles() returns null.
+            if (filesFound == null) {
+                println("OpenBCI_GUI::Setup: Bundled sample data directory is missing or inaccessible.");
+                return;
+            }
+
             for (File file : filesFound) {
                 if (file.isFile()) {
                     Files.copy(file.toPath(),
@@ -12699,13 +12995,8 @@ class DirectoryManager {
         }
     }
 
-    private void makeRecordingsFolder() {
-        //Create GUI Recordings folder if it doesn't exist
-        String recordingDirString = guiDataPath + File.separator + "Recordings";
-        File recDirectory = new File(recordingDirString);
-        if (recDirectory.mkdir()) {
-            println("OpenBCI_GUI::Setup: Created " + recordingDirString);
-        }
+    private boolean ensureDirectory(File directory) {
+        return directory.isDirectory() || directory.mkdirs() || directory.isDirectory();
     }
     
 };
@@ -13709,6 +14000,209 @@ class EmgSettingsValues {
 
     public float getLowerThreshold(int channel) {
         return lowerThreshold[channel];
+    }
+}
+
+
+
+
+
+
+
+
+
+
+/**
+ * Lightweight TCP server that accepts remote commands to control data recording.
+ *
+ * Use case: the MIST EEG experiment (Python/PsychoPy) sends commands at stage
+ * boundaries so the GUI automatically starts/stops recording with the correct
+ * file name without manual intervention.
+ *
+ * Protocol (newline-delimited text):
+ *   RECORD:<name>  – stop current recording, set file name, start new recording
+ *   STOP           – stop current recording
+ *   PING           – respond "PONG" (connection test)
+ *
+ * Thread safety: network I/O runs on a daemon thread; commands are queued and
+ * dispatched on the main draw/update thread via checkCommands().
+ */
+class ExperimentControlServer {
+    private final int listenPort;
+    private volatile boolean shouldRun = false;
+    private ServerSocket serverSocket = null;
+    private Socket clientSocket = null;
+    private Thread serverThread = null;
+    private PrintWriter clientOut = null;
+    private final ConcurrentLinkedQueue<String> commandQueue = new ConcurrentLinkedQueue<String>();
+
+    ExperimentControlServer(int port) {
+        listenPort = port;
+    }
+
+    // ---- Lifecycle ----
+
+    public void start() {
+        if (listenPort <= 0 || listenPort > 65535) {
+            println("ExpCtrlServer: Invalid port " + listenPort + ". Not starting.");
+            return;
+        }
+        try {
+            // Control is deliberately loopback-only; participant/file names must
+            // never be controllable by another machine on the LAN.
+            serverSocket = new ServerSocket();
+            serverSocket.setReuseAddress(true);
+            serverSocket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), listenPort));
+            shouldRun = true;
+            serverThread = new Thread(new Runnable() {
+                public void run() {
+                    runServerLoop();
+                }
+            }, "ExperimentControlServer");
+            serverThread.setDaemon(true);
+            serverThread.start();
+            println("ExpCtrlServer: Listening for experiment control commands on 127.0.0.1:" + listenPort);
+        } catch (IOException e) {
+            println("ExpCtrlServer: Could not listen on port " + listenPort + ": " + e.getMessage());
+        }
+    }
+
+    public void stop() {
+        shouldRun = false;
+        closeClient();
+        closeServerSocket();
+        if (serverThread != null) {
+            try {
+                serverThread.join(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            serverThread = null;
+        }
+        commandQueue.clear();
+        println("ExpCtrlServer: Stopped.");
+    }
+
+    // ---- Server loop (daemon thread) ----
+
+    private void runServerLoop() {
+        while (shouldRun) {
+            try {
+                if (serverSocket == null || serverSocket.isClosed()) break;
+                println("ExpCtrlServer: Waiting for client connection...");
+                clientSocket = serverSocket.accept();
+                clientSocket.setTcpNoDelay(true);
+                clientSocket.setSoTimeout(0); // block indefinitely
+                clientOut = new PrintWriter(clientSocket.getOutputStream(), true);
+                println("ExpCtrlServer: Client connected: " + clientSocket.getInetAddress());
+
+                BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(clientSocket.getInputStream(), "UTF-8"));
+                String line;
+                while (shouldRun && (line = reader.readLine()) != null) {
+                    line = line.trim();
+                    if (!line.isEmpty()) {
+                        commandQueue.add(line);
+                        println("ExpCtrlServer: Queued command: " + line);
+                    }
+                }
+            } catch (IOException e) {
+                if (shouldRun) {
+                    println("ExpCtrlServer: Connection error: " + e.getMessage());
+                }
+            } finally {
+                closeClient();
+            }
+        }
+    }
+
+    // ---- Called from the main draw thread ----
+
+    /**
+     * Drain the command queue and dispatch each command on the main thread.
+     * Must be called from the Processing draw() / systemUpdate() thread because
+     * most GUI operations (startRunning, stopRunning, DataLogger, etc.) are not
+     * thread-safe.
+     */
+    public void checkCommands() {
+        String cmd;
+        while ((cmd = commandQueue.poll()) != null) {
+            dispatchCommand(cmd);
+        }
+    }
+
+    // ---- Command dispatch ----
+
+    private void dispatchCommand(String cmd) {
+        if (cmd.equalsIgnoreCase("PING")) {
+            sendResponse("PONG");
+            println("ExpCtrlServer: PING received, sent PONG");
+        } else if (cmd.equalsIgnoreCase("STATUS")) {
+            sendResponse(experimentControlGetStatus());
+        } else if (cmd.equalsIgnoreCase("STOP")) {
+            println("ExpCtrlServer: Executing STOP");
+            sendResponse(experimentControlStopRecording());
+        } else if (cmd.toUpperCase().startsWith("RECORD:")) {
+            String payload = cmd.substring(7).trim();
+            if (payload.isEmpty()) {
+                sendResponse("ERR:empty recording name");
+                return;
+            }
+            String experimentSessionName = payload;
+            String fileName = payload;
+            int separator = payload.indexOf('|');
+            if (separator >= 0) {
+                experimentSessionName = payload.substring(0, separator).trim();
+                fileName = payload.substring(separator + 1).trim();
+            }
+            experimentSessionName = sanitizeName(experimentSessionName);
+            fileName = sanitizeName(fileName);
+            if (experimentSessionName.isEmpty() || fileName.isEmpty()) {
+                sendResponse("ERR:invalid recording name");
+                return;
+            }
+            println("ExpCtrlServer: Executing RECORD '" + fileName + "'");
+            sendResponse(experimentControlStartRecording(experimentSessionName, fileName));
+        } else {
+            sendResponse("ERR:unknown command: " + cmd);
+            println("ExpCtrlServer: Unknown command: " + cmd);
+        }
+    }
+
+    private String sanitizeName(String value) {
+        String sanitized = value.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (sanitized.length() > 120) {
+            sanitized = sanitized.substring(0, 120);
+        }
+        return sanitized;
+    }
+
+    private void sendResponse(String msg) {
+        if (clientOut != null) {
+            try {
+                clientOut.println(msg);
+                clientOut.flush();
+            } catch (Exception e) {
+                // client may have disconnected – ignore
+            }
+        }
+    }
+
+    // ---- Helpers for clean shutdown ----
+
+    private void closeClient() {
+        if (clientSocket != null) {
+            try { clientSocket.close(); } catch (IOException e) { }
+            clientSocket = null;
+        }
+        clientOut = null;
+    }
+
+    private void closeServerSocket() {
+        if (serverSocket != null) {
+            try { serverSocket.close(); } catch (IOException e) { }
+            serverSocket = null;
+        }
     }
 }
 
@@ -15887,36 +16381,70 @@ class FilterUIPopup extends PApplet implements Runnable {
 
 
 
-public class FixedStack<T> extends Stack<T> {
+
+// A fixed-capacity list that exposes the oldest item at index 0.
+// Once full, push() overwrites the oldest item in O(1) time.
+public class FixedStack<T> extends AbstractList<T> {
+    private Object[] elements;
     private int maxSize;
+    private int start;
+    private int count;
 
     public FixedStack(int size) {
-        super();
-        this.maxSize = size;
+        setSize(size);
     }
 
     public FixedStack() {
-        super();
-        maxSize = 1000;
+        setSize(1000);
     }
 
-    // not thread safe with push but its temporary
     public void setSize(int size) {
+        if (size < 0) {
+            throw new IllegalArgumentException("FixedStack size cannot be negative");
+        }
         maxSize = size;
+        elements = new Object[maxSize];
+        start = 0;
+        count = 0;
+        modCount++;
     }
 
     public void fill(T object) {
-        for (int i = 0; i < maxSize; i++) {
-            push(object);
+        Arrays.fill(elements, object);
+        start = 0;
+        count = maxSize;
+        modCount++;
+    }
+
+    public T push(T object) {
+        if (maxSize == 0) {
+            return object;
         }
+
+        if (count < maxSize) {
+            elements[(start + count) % maxSize] = object;
+            count++;
+        } else {
+            elements[start] = object;
+            start = (start + 1) % maxSize;
+        }
+        modCount++;
+        return object;
     }
 
     @Override
-    public T push(T object) {
-        while (this.size() >= maxSize) {
-            this.remove(0);
+    public T get(int index) {
+        if (index < 0 || index >= count) {
+            throw new IndexOutOfBoundsException("index=" + index + ", size=" + count);
         }
-        return super.push(object);
+        @SuppressWarnings("unchecked")
+        T value = (T)elements[(start + index) % maxSize];
+        return value;
+    }
+
+    @Override
+    public int size() {
+        return count;
     }
 }
 /// Here are the enums used by the Focus Widget, found in W_Focus.pde 
@@ -16534,13 +17062,13 @@ class GuiSettings {
             final File file = new File(filename);
             final File parent_directory = file.getParentFile();
 
-            if (null != parent_directory)
-            {
-                parent_directory.mkdirs();
+            if (parent_directory != null && !parent_directory.isDirectory() &&
+                !parent_directory.mkdirs() && !parent_directory.isDirectory()) {
+                throw new IOException("Unable to create settings directory: " + parent_directory.getAbsolutePath());
             }
         } catch (Exception e) {
             e.printStackTrace();
-            outputWarn("OpenBCI_GUI::Settings: Error creating /Documents/OpenBCI_GUI/Settings/ folder. Please make an issue on GitHub.");
+            outputWarn("OpenBCI_GUI::Settings: Error creating GUI settings folder: " + filename);
             return false;
         }
  
@@ -24061,8 +24589,9 @@ class W_fft extends Widget {
 
     int xLim = xLimOptions[2];  //maximum value of x axis ... in this case 20 Hz, 40 Hz, 60 Hz, 120 Hz
     int xMax = xLimOptions[xLimOptions.length-1];   //maximum possible frequency in FFT
-    int FFT_indexLim = PApplet.parseInt(1.0f*xMax*(getNfftSafe()/currentBoard.getSampleRate()));   // maxim value of FFT index
+    int FFT_indexLim = calculateFFTPointCount(xLim);
     int yLim = yLimOptions[2];  //maximum value of y axis ... 100 uV
+    long lastFFTDataGeneration = -1;
 
     List<controlP5.Controller> cp5ElementsToCheck = new ArrayList<controlP5.Controller>();
 
@@ -24142,12 +24671,15 @@ class W_fft extends Widget {
         float sr = currentBoard.getSampleRate();
         int nfft = getNfftSafe();
 
-        //update the points of the FFT channel arrays for all channels
-        for (int i = 0; i < fft_points.length; i++) {
-            for (int j = 0; j < FFT_indexLim + 2; j++) {  //loop through frequency domain data, and store into points array
-                GPoint powerAtBin = new GPoint((1.0f*sr/nfft)*j, fftBuff[i].getBand(j));
-                fft_points[i].set(j, powerAtBin);
+        // FFT data only changes with the DSP snapshot. Update just the bins
+        // inside the selected x-axis range and reuse existing GPoint storage.
+        if (lastFFTDataGeneration != dataProcessingGeneration) {
+            for (int i = 0; i < fft_points.length; i++) {
+                for (int j = 0; j < FFT_indexLim; j++) {
+                    fft_points[i].set(j, (1.0f*sr/nfft)*j, fftBuff[i].getBand(j), "");
+                }
             }
+            lastFFTDataGeneration = dataProcessingGeneration;
         }
 
         //Update channel select checkboxes and active channels
@@ -24225,13 +24757,35 @@ class W_fft extends Widget {
             fft_plot.setOuterDim(w, h + navHeight);
         }
     }
+
+    private int calculateFFTPointCount(int maxFrequency) {
+        int nfft = getNfftSafe();
+        int requestedBins = (int)Math.ceil(maxFrequency * nfft / (double)currentBoard.getSampleRate()) + 1;
+        return min(nfft/2 + 1, max(2, requestedBins));
+    }
+
+    public void setMaxFrequency(int maxFrequency) {
+        xLim = maxFrequency;
+        fft_plot.setXLim(0.1f, xLim);
+        int newPointCount = calculateFFTPointCount(xLim);
+        if (newPointCount != FFT_indexLim) {
+            FFT_indexLim = newPointCount;
+            for (int channel = 0; channel < fft_points.length; channel++) {
+                fft_points[channel] = new GPointsArray(FFT_indexLim);
+                for (int bin = 0; bin < FFT_indexLim; bin++) {
+                    fft_points[channel].set(bin, (1.0f*currentBoard.getSampleRate()/getNfftSafe())*bin, 0, "");
+                }
+            }
+        }
+        lastFFTDataGeneration = -1;
+    }
 };
 
 //These functions need to be global! These functions are activated when an item from the corresponding dropdown is selected
 //triggered when there is an event in the MaxFreq. Dropdown
 public void MaxFreq(int n) {
     /* request the selected item based on index n */
-    w_fft.fft_plot.setXLim(0.1f, w_fft.xLimOptions[n]); //update the xLim of the FFT_Plot
+    w_fft.setMaxFrequency(w_fft.xLimOptions[n]); //update plot range and visible FFT bins
     settings.fftMaxFrqSave = n; //save the xLim to variable for save/load settings
 }
 
@@ -24304,6 +24858,8 @@ public void UnfiltFilt(int n) {
 
 class W_Focus extends Widget {
 
+    private static final int FOCUS_UPDATE_MILLIS = 250;
+
     //to see all core variables/methods of the Widget class, refer to Widget.pde
     //put your custom variables here...
     //private ControlP5 focus_cp5;
@@ -24341,6 +24897,7 @@ class W_Focus extends Widget {
     MLModel mlModel;
     private double metricPrediction = 0d;
     private boolean predictionExceedsThreshold = false;
+    private int lastFocusUpdateMillis = -FOCUS_UPDATE_MILLIS;
 
     private float xc, yc, wc, hc; // status circle center xy, width and height
     private int graphX, graphY, graphW, graphH;
@@ -24411,11 +24968,13 @@ class W_Focus extends Widget {
             prevChanSelectIsVisible = focusChanSelect.isVisible();
         }
 
-        if (currentBoard.isStreaming()) {
+        int now = millis();
+        if (currentBoard.isStreaming() && now - lastFocusUpdateMillis >= FOCUS_UPDATE_MILLIS) {
             metricPrediction = updateFocusState();
             dataGrid.setString(df.format(metricPrediction), 0, 1);
             focusBar.update(metricPrediction);
             predictionExceedsThreshold = metricPrediction > focusThreshold.getValue();
+            lastFocusUpdateMillis = now;
         }
 
         lockElementsOnOverlapCheck(cp5ElementsToCheck);
@@ -24540,9 +25099,14 @@ class W_Focus extends Widget {
             }
 
             for (int i = 0; i < channelCount; i++) {
-                dataArray[i] = new double[windowSize];
-                for (int j = 0; j < currentData.size(); j++) {
-                    dataArray[i][j] = currentData.get(j)[exgChannels[i]];
+                if (dataArray[i] == null || dataArray[i].length != windowSize) {
+                    dataArray[i] = new double[windowSize];
+                }
+            }
+            for (int j = 0; j < currentData.size(); j++) {
+                double[] row = currentData.get(j);
+                for (int i = 0; i < channelCount; i++) {
+                    dataArray[i][j] = row[exgChannels[i]];
                 }
             }
 
@@ -26335,6 +26899,8 @@ class W_Networking extends Widget {
 
     private LinkedList<double[]> dataAccumulationQueue;
     private LinkedList<float[]> dataAccumulationQueueFiltered;
+    private int pendingFilteredSamples = 0;
+    private long lastFilteredDataGeneration = -1;
     public float[][] dataBufferToSend;
     public float[][] dataBufferToSend_Filtered;
     public AtomicBoolean[] networkingFrameLocks = new AtomicBoolean[4];
@@ -26389,6 +26955,7 @@ class W_Networking extends Widget {
         dataAccumulationQueue = new LinkedList<double[]>();
         dataBufferToSend_Filtered = new float[currentBoard.getNumEXGChannels()][nPointsPerUpdate];
         dataAccumulationQueueFiltered = new LinkedList<float[]>();
+        lastFilteredDataGeneration = dataProcessingGeneration;
 
         cp5ElementsToCheck = new ArrayList<controlP5.Controller>();
         cp5ElementsToCheck.add((controlP5.Controller) guideButton);
@@ -26510,24 +27077,35 @@ class W_Networking extends Widget {
         double[][] newData = currentBoard.getFrameData();
         int[] exgChannels = currentBoard.getEXGChannels();
 
-        if (newData[exgChannels[0]].length == 0) {
-            return;
-        }
-
-        int start = dataProcessingFilteredBuffer[0].length - newData[exgChannels[0]].length;
-
-        for (int iSample = 0; iSample < newData[exgChannels[0]].length; iSample++) {
+        int newSampleCount = newData[exgChannels[0]].length;
+        for (int iSample = 0; iSample < newSampleCount; iSample++) {
 
             double[] sample = new double[exgChannels.length];
-            float[] sample_filtered = new float[exgChannels.length];
 
             for (int iChan = 0; iChan < exgChannels.length; iChan++) {
                 sample[iChan] = newData[exgChannels[iChan]][iSample];
-                sample_filtered[iChan] = dataProcessingFilteredBuffer[iChan][start + iSample];
                 // println("CHAN== "+iChan+" || SAMPLE== "+iSample+" DATA=="+sample[iChan]);
             }
             dataAccumulationQueue.add(sample);
-            dataAccumulationQueueFiltered.add(sample_filtered);
+            pendingFilteredSamples++;
+        }
+
+        // DSP runs at a fixed visualization rate. When a new filtered snapshot
+        // is ready, enqueue every sample accumulated since the prior snapshot.
+        if (lastFilteredDataGeneration != dataProcessingGeneration) {
+            if (pendingFilteredSamples > 0) {
+                int samplesToCopy = min(pendingFilteredSamples, dataProcessingFilteredBuffer[0].length);
+                int start = dataProcessingFilteredBuffer[0].length - samplesToCopy;
+                for (int iSample = 0; iSample < samplesToCopy; iSample++) {
+                    float[] sampleFiltered = new float[exgChannels.length];
+                    for (int iChan = 0; iChan < exgChannels.length; iChan++) {
+                        sampleFiltered[iChan] = dataProcessingFilteredBuffer[iChan][start + iSample];
+                    }
+                    dataAccumulationQueueFiltered.add(sampleFiltered);
+                }
+                pendingFilteredSamples = 0;
+            }
+            lastFilteredDataGeneration = dataProcessingGeneration;
         }
     }
 
@@ -30603,6 +31181,8 @@ public void Duration(int n) {
 //one of these will be created for each channel (4, 8, or 16)
 class ChannelBar {
 
+    private static final int MAX_DISPLAY_POINTS = 2000;
+
     int channelIndex; //duh
     String channelString;
     int x, y, w, h;
@@ -30637,6 +31217,7 @@ class ChannelBar {
     float autoscaleMin;
     float autoscaleMax;
     int previousMillis = 0;
+    long lastPlotDataGeneration = -1;
     
     TextBox voltageValue;
     TextBox impValue;
@@ -30738,8 +31319,12 @@ class ChannelBar {
         }
         impValue.setText(fmt);
 
-        // update data in plot
-        updatePlotPoints();
+        // Rebuild plot points only when the DSP snapshot changes. Rendering and
+        // controls can still run at the full GUI frame rate.
+        if (lastPlotDataGeneration != dataProcessingGeneration) {
+            updatePlotPoints();
+            lastPlotDataGeneration = dataProcessingGeneration;
+        }
 
         if(currentBoard.isEXGChannelActive(channelIndex)) {
             onOffButton.setColorBackground(channelColors[channelIndex%8]); // power down == false, set color to vibrant
@@ -30764,20 +31349,61 @@ class ChannelBar {
     private void updatePlotPoints() {
         autoscaleMax = -Float.MAX_VALUE;
         autoscaleMin = Float.MAX_VALUE;
-        // update data in plot
-        if (dataProcessingFilteredBuffer[channelIndex].length >= nPoints) {
-            for (int i = dataProcessingFilteredBuffer[channelIndex].length - nPoints; i < dataProcessingFilteredBuffer[channelIndex].length; i++) {
-                float time = -(float)numSeconds + (float)(i-(dataProcessingFilteredBuffer[channelIndex].length-nPoints))*timeBetweenPoints;
-                float filt_uV_value = dataProcessingFilteredBuffer[channelIndex][i];
+        float[] channelData = dataProcessingFilteredBuffer[channelIndex];
+        int sourcePointCount = min(channelData.length, numSeconds * currentBoard.getSampleRate());
+        int sourceStart = channelData.length - sourcePointCount;
 
-                // update channel point in place
-                channelPoints.set(i-(dataProcessingFilteredBuffer[channelIndex].length-nPoints), time, filt_uV_value, "");
-                autoscaleMax = Math.max(filt_uV_value, autoscaleMax);
-                autoscaleMin = Math.min(filt_uV_value, autoscaleMin);
+        if (sourcePointCount <= nPoints) {
+            for (int offset = 0; offset < sourcePointCount; offset++) {
+                float value = channelData[sourceStart + offset];
+                float time = -(float)numSeconds + offset / (float)currentBoard.getSampleRate();
+                channelPoints.set(offset, time, value, "");
+                autoscaleMax = Math.max(value, autoscaleMax);
+                autoscaleMin = Math.min(value, autoscaleMin);
             }
-            applyAutoscale();
-            plot.setPoints(channelPoints); //reset the plot with updated channelPoints
+        } else {
+            // Preserve narrow EEG spikes with a min/max envelope rather than
+            // dropping every Nth point. Each bucket contributes two ordered
+            // extrema, limiting the renderer to MAX_DISPLAY_POINTS.
+            int bucketCount = nPoints / 2;
+            int pointIndex = 0;
+            for (int bucket = 0; bucket < bucketCount; bucket++) {
+                int bucketStart = bucket * sourcePointCount / bucketCount;
+                int bucketEnd = (bucket + 1) * sourcePointCount / bucketCount;
+                int minOffset = bucketStart;
+                int maxOffset = bucketStart;
+                float minValue = channelData[sourceStart + bucketStart];
+                float maxValue = minValue;
+
+                for (int offset = bucketStart + 1; offset < bucketEnd; offset++) {
+                    float value = channelData[sourceStart + offset];
+                    if (value < minValue) {
+                        minValue = value;
+                        minOffset = offset;
+                    }
+                    if (value > maxValue) {
+                        maxValue = value;
+                        maxOffset = offset;
+                    }
+                }
+
+                int firstOffset = minOffset <= maxOffset ? minOffset : maxOffset;
+                int secondOffset = minOffset <= maxOffset ? maxOffset : minOffset;
+                float firstValue = minOffset <= maxOffset ? minValue : maxValue;
+                float secondValue = minOffset <= maxOffset ? maxValue : minValue;
+                channelPoints.set(pointIndex++,
+                                  -(float)numSeconds + firstOffset / (float)currentBoard.getSampleRate(),
+                                  firstValue, "");
+                channelPoints.set(pointIndex++,
+                                  -(float)numSeconds + secondOffset / (float)currentBoard.getSampleRate(),
+                                  secondValue, "");
+                autoscaleMax = Math.max(maxValue, autoscaleMax);
+                autoscaleMin = Math.min(minValue, autoscaleMin);
+            }
         }
+
+        applyAutoscale();
+        plot.setPoints(channelPoints);
     }
 
     public void draw(boolean hardwareSettingsAreOpen) {        
@@ -30848,7 +31474,7 @@ class ChannelBar {
     }
 
     private int nPointsBasedOnDataSource() {
-        return numSeconds * currentBoard.getSampleRate();
+        return min(numSeconds * currentBoard.getSampleRate(), MAX_DISPLAY_POINTS);
     }
 
     public void adjustTimeAxis(int _newTimeSize) {
@@ -30857,6 +31483,7 @@ class ChannelBar {
 
         nPoints = nPointsBasedOnDataSource();
         channelPoints = new GPointsArray(nPoints);
+        timeBetweenPoints = (float)numSeconds / (float)nPoints;
         if(_newTimeSize > 1) {
             plot.getXAxis().setNTicks(_newTimeSize);  //sets the number of axis divisions...
         }else{

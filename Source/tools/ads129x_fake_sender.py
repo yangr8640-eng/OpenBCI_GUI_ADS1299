@@ -19,6 +19,7 @@ SAMPLE_RATE_CODE = {
     250: 7,
     500: 6,
     1000: 5,
+    2000: 4,
 }
 
 GAIN_CODE = {
@@ -120,13 +121,15 @@ def run_sender(args: argparse.Namespace) -> None:
 
 
 def self_test() -> None:
-    frame = build_frame(1, [[0] * 16, [-1] * 16], sample_rate=250, gain=24)
-    assert frame.startswith(FRAME_HEAD)
-    assert frame.endswith(FRAME_TAIL)
-    data_len = int.from_bytes(frame[14:16], "big")
-    assert data_len == 16 * 3 * 2
-    checksum = int.from_bytes(frame[16 + data_len : 18 + data_len], "big")
-    assert checksum == (sum(frame[: 16 + data_len]) & 0xFFFF)
+    for sample_rate, rate_code in SAMPLE_RATE_CODE.items():
+        frame = build_frame(1, [[0] * 16, [-1] * 16], sample_rate=sample_rate, gain=24)
+        assert frame.startswith(FRAME_HEAD)
+        assert frame.endswith(FRAME_TAIL)
+        assert frame[11] >> 4 == rate_code
+        data_len = int.from_bytes(frame[14:16], "big")
+        assert data_len == 16 * 3 * 2
+        checksum = int.from_bytes(frame[16 + data_len : 18 + data_len], "big")
+        assert checksum == (sum(frame[: 16 + data_len]) & 0xFFFF)
     print("ads129x fake sender self-test passed")
 
 
@@ -134,7 +137,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=1234)
-    parser.add_argument("--rate", type=int, choices=(250, 500, 1000), default=250)
+    parser.add_argument("--rate", type=int, choices=(250, 500, 1000, 2000), default=250)
     parser.add_argument("--gain", type=int, choices=(1, 2, 3, 4, 6, 8, 12, 24), default=24)
     parser.add_argument("--duration", type=float, default=30.0, help="seconds to send; <=0 sends until interrupted")
     parser.add_argument("--batch-samples", type=int, default=5)

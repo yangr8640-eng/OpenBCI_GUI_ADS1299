@@ -9,6 +9,7 @@ class DataLogger {
     public final int OUTPUT_SOURCE_ODF = 1; // The OpenBCI CSV Data Format
     public final int OUTPUT_SOURCE_BDF = 2; // The BDF data format http://www.biosemi.com/faq/file_format.htm
     private int outputDataSource;
+    private String customRecordingName = null;
 
     DataLogger() {
         //Default to OpenBCI CSV Data Format
@@ -65,6 +66,27 @@ class DataLogger {
         }
     }
 
+    /** Set a custom recording name for the next log file. */
+    public void setRecordingName(String name) {
+        setRecordingName(name, name);
+    }
+
+    /** Use one experiment folder while giving every stage its own file name. */
+    public void setRecordingName(String experimentSessionName, String fileName) {
+        customRecordingName = fileName;
+        setSessionName(experimentSessionName);
+        settings.setSessionPath(
+            directoryManager.getRecordingsPath()
+            + "OpenBCISession_" + experimentSessionName + File.separator
+        );
+        println("DataLogger: Recording name set to '" + fileName
+            + "' in session '" + experimentSessionName + "'");
+    }
+
+    public String getRecordingName() {
+        return customRecordingName;
+    }
+
     public void onStartStreaming() {
         if (outputDataSource > OUTPUT_SOURCE_NONE && eegDataSource != DATASOURCE_PLAYBACKFILE) {
             //open data file if it has not already been opened
@@ -107,7 +129,9 @@ class DataLogger {
                 openNewLogFileODF(_fileName);
                 break;
             case OUTPUT_SOURCE_BDF:
-                openNewLogFileBDF(_fileName);
+                String bdfFileName = customRecordingName != null ? customRecordingName : _fileName;
+                openNewLogFileBDF(bdfFileName);
+                customRecordingName = null;
                 break;
             case OUTPUT_SOURCE_NONE:
             default:
@@ -144,12 +168,22 @@ class DataLogger {
             println("OpenBCI_GUI: closing log file");
             closeLogFile();
         }
-        //open the new file
-        fileWriterODF = new DataWriterODF(sessionName, _fileName);
-        if (currentBoard instanceof AuxDataBoard) {
-            if (fileWriterAuxODF != null)
-                fileWriterAuxODF.closeFile();
-            fileWriterAuxODF = new DataWriterAuxODF(sessionName, _fileName);
+        if (customRecordingName != null) {
+            println("DataLogger: Using custom recording name: " + customRecordingName);
+            fileWriterODF = new DataWriterODF(sessionName, customRecordingName, true);
+            if (currentBoard instanceof AuxDataBoard) {
+                if (fileWriterAuxODF != null)
+                    fileWriterAuxODF.closeFile();
+                fileWriterAuxODF = new DataWriterAuxODF(sessionName, customRecordingName, true);
+            }
+            customRecordingName = null;
+        } else {
+            fileWriterODF = new DataWriterODF(sessionName, _fileName);
+            if (currentBoard instanceof AuxDataBoard) {
+                if (fileWriterAuxODF != null)
+                    fileWriterAuxODF.closeFile();
+                fileWriterAuxODF = new DataWriterAuxODF(sessionName, _fileName);
+            }
         }
 
         output_fname = fileWriterODF.fname;
@@ -170,6 +204,13 @@ class DataLogger {
                 break;
         }
         settings.setLogFileIsOpen(false);
+    }
+
+    /** Close and finalize the current file, including BDF experiment files. */
+    public void closeExperimentLogFile() {
+        if (settings.isLogFileOpen()) {
+            closeLogFile();
+        }
     }
 
     /**

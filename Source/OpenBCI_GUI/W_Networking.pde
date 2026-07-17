@@ -87,6 +87,8 @@ class W_Networking extends Widget {
 
     private LinkedList<double[]> dataAccumulationQueue;
     private LinkedList<float[]> dataAccumulationQueueFiltered;
+    private int pendingFilteredSamples = 0;
+    private long lastFilteredDataGeneration = -1;
     public float[][] dataBufferToSend;
     public float[][] dataBufferToSend_Filtered;
     public AtomicBoolean[] networkingFrameLocks = new AtomicBoolean[4];
@@ -141,6 +143,7 @@ class W_Networking extends Widget {
         dataAccumulationQueue = new LinkedList<double[]>();
         dataBufferToSend_Filtered = new float[currentBoard.getNumEXGChannels()][nPointsPerUpdate];
         dataAccumulationQueueFiltered = new LinkedList<float[]>();
+        lastFilteredDataGeneration = dataProcessingGeneration;
 
         cp5ElementsToCheck = new ArrayList<controlP5.Controller>();
         cp5ElementsToCheck.add((controlP5.Controller) guideButton);
@@ -262,24 +265,35 @@ class W_Networking extends Widget {
         double[][] newData = currentBoard.getFrameData();
         int[] exgChannels = currentBoard.getEXGChannels();
 
-        if (newData[exgChannels[0]].length == 0) {
-            return;
-        }
-
-        int start = dataProcessingFilteredBuffer[0].length - newData[exgChannels[0]].length;
-
-        for (int iSample = 0; iSample < newData[exgChannels[0]].length; iSample++) {
+        int newSampleCount = newData[exgChannels[0]].length;
+        for (int iSample = 0; iSample < newSampleCount; iSample++) {
 
             double[] sample = new double[exgChannels.length];
-            float[] sample_filtered = new float[exgChannels.length];
 
             for (int iChan = 0; iChan < exgChannels.length; iChan++) {
                 sample[iChan] = newData[exgChannels[iChan]][iSample];
-                sample_filtered[iChan] = dataProcessingFilteredBuffer[iChan][start + iSample];
                 // println("CHAN== "+iChan+" || SAMPLE== "+iSample+" DATA=="+sample[iChan]);
             }
             dataAccumulationQueue.add(sample);
-            dataAccumulationQueueFiltered.add(sample_filtered);
+            pendingFilteredSamples++;
+        }
+
+        // DSP runs at a fixed visualization rate. When a new filtered snapshot
+        // is ready, enqueue every sample accumulated since the prior snapshot.
+        if (lastFilteredDataGeneration != dataProcessingGeneration) {
+            if (pendingFilteredSamples > 0) {
+                int samplesToCopy = min(pendingFilteredSamples, dataProcessingFilteredBuffer[0].length);
+                int start = dataProcessingFilteredBuffer[0].length - samplesToCopy;
+                for (int iSample = 0; iSample < samplesToCopy; iSample++) {
+                    float[] sampleFiltered = new float[exgChannels.length];
+                    for (int iChan = 0; iChan < exgChannels.length; iChan++) {
+                        sampleFiltered[iChan] = dataProcessingFilteredBuffer[iChan][start + iSample];
+                    }
+                    dataAccumulationQueueFiltered.add(sampleFiltered);
+                }
+                pendingFilteredSamples = 0;
+            }
+            lastFilteredDataGeneration = dataProcessingGeneration;
         }
     }
 

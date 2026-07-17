@@ -6,6 +6,10 @@ public class DataWriterAuxODF extends DataWriterODF {
     DataWriterAuxODF(String _sessionName, String _fileName) {
         super(_sessionName, _fileName);
     }
+
+    DataWriterAuxODF(String _sessionName, String _fileName, boolean useAsCompleteName) {
+        super(_sessionName, _fileName, useAsCompleteName);
+    }
     
     protected int getNumberOfChannels() {
         return ((AuxDataBoard)currentBoard).getNumAuxChannels();

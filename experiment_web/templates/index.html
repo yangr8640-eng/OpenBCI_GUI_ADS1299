@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MIST EEG 实验</title>
+<link rel="stylesheet" href="/static/experiment.css">
+</head>
+<body>
+
+<!-- ==================== Screen: Subject Info ==================== -->
+<div id="screen-subject-info" class="screen">
+  <div class="card card-large">
+    <div class="card-header">
+      <h1>被试信息输入</h1>
+    </div>
+    <div class="card-body">
+      <div class="form-group">
+        <label for="fld-subject-id">Subject ID / 被试编号</label>
+        <input type="text" id="fld-subject-id" value="TEST" maxlength="32" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="fld-session">Session / 实验次数</label>
+        <input type="text" id="fld-session" value="01" maxlength="4" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="fld-age">Age / 年龄</label>
+        <input type="text" id="fld-age" value="" maxlength="3" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Sex / 性别</label>
+        <div class="radio-group">
+          <label class="radio-label"><input type="radio" name="sex" value="female"> female</label>
+          <label class="radio-label"><input type="radio" name="sex" value="male" checked> male</label>
+          <label class="radio-label"><input type="radio" name="sex" value="other"> other</label>
+          <label class="radio-label"><input type="radio" name="sex" value="prefer_not_to_say"> prefer not to say</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Handedness / 利手</label>
+        <div class="radio-group">
+          <label class="radio-label"><input type="radio" name="handedness" value="right" checked> right</label>
+          <label class="radio-label"><input type="radio" name="handedness" value="left"> left</label>
+          <label class="radio-label"><input type="radio" name="handedness" value="ambidextrous"> ambidextrous</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="fld-operator">Operator / 主试编号</label>
+        <input type="text" id="fld-operator" value="" maxlength="32" autocomplete="off">
+      </div>
+    </div>
+    <div class="card-footer">
+      <p class="hint">按 <kbd>Enter</kbd> 确认并开始实验</p>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Screen: Device Check ==================== -->
+<div id="screen-device-check" class="screen" style="display:none">
+  <div class="card card-large">
+    <div id="device-check-header" class="card-header accent-blue">
+      <h1 id="device-check-title">正在检查脑电设备</h1>
+    </div>
+    <div class="card-body">
+      <div class="device-status-list">
+        <div class="device-status-row">
+          <span>OpenBCI GUI 控制服务</span>
+          <span id="device-gui" class="device-badge device-waiting">检测中</span>
+        </div>
+        <div class="device-status-row">
+          <span>GUI Session 已启动</span>
+          <span id="device-session" class="device-badge device-waiting">检测中</span>
+        </div>
+        <div class="device-status-row">
+          <span>ADS1299 数据源</span>
+          <span id="device-source" class="device-badge device-waiting">检测中</span>
+        </div>
+        <div class="device-status-row">
+          <span>ADS1299 硬件连接</span>
+          <span id="device-board" class="device-badge device-waiting">检测中</span>
+        </div>
+      </div>
+      <p id="device-check-message" class="device-message muted">
+        请保持 OpenBCI GUI 打开。
+      </p>
+    </div>
+    <div class="card-footer">
+      <p id="device-check-footer" class="hint">系统会自动重试；按 <kbd>Esc</kbd> 中止实验</p>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Screen: Instructions ==================== -->
+<div id="screen-instructions" class="screen" style="display:none">
+  <div class="card card-large">
+    <div class="card-header accent-blue">
+      <h1>Modified MIST EEG 实验</h1>
+    </div>
+    <div class="card-body text-center">
+      <p>接下来你将完成静息和算术填空任务。</p>
+      <p>算术题中，请输入计算结果并按 <kbd>Enter</kbd> 提交。</p>
+      <p>请在保持头部和身体稳定的情况下尽快准确作答。</p>
+      <br>
+      <p class="muted">如果需要紧急停止，请按 <kbd>Esc</kbd>。</p>
+      <p class="muted">流程测试时可按 <kbd>S</kbd> 跳过当前部分。</p>
+    </div>
+    <div class="card-footer">
+      <p class="hint">按 <kbd>空格</kbd> 继续</p>
+    </div>
+  </div>
+  <div id="skip-hint-instructions" class="skip-hint">S 跳过</div>
+</div>
+
+<!-- ==================== Screen: Rest Block ==================== -->
+<div id="screen-rest" class="screen" style="display:none">
+  <div class="stage-header card">
+    <div class="stage-header-inner">
+      <span id="rest-stage-title" class="stage-title"></span>
+      <span id="rest-countdown" class="stage-countdown"></span>
+    </div>
+    <div class="progress-bar-bg">
+      <div id="rest-progress" class="progress-bar-fill progress-blue"></div>
+    </div>
+  </div>
+  <div class="rest-content">
+    <div id="rest-fixation" class="fixation-cross" style="display:none">+</div>
+    <p id="rest-instruction" class="rest-instruction"></p>
+    <p id="rest-timer" class="rest-timer-large"></p>
+    <p class="rest-muted">请尽量减少眨眼和身体移动</p>
+  </div>
+  <div id="skip-hint-rest" class="skip-hint">S 跳过</div>
+</div>
+
+<!-- ==================== Screen: Math Block ==================== -->
+<div id="screen-math" class="screen" style="display:none">
+  <div class="stage-header card">
+    <div class="stage-header-inner">
+      <span id="math-stage-title" class="stage-title"></span>
+      <span id="math-countdown" class="stage-countdown"></span>
+    </div>
+    <div class="progress-bar-bg">
+      <div id="math-progress" class="progress-bar-fill progress-blue"></div>
+    </div>
+  </div>
+
+  <!-- Stress stats panel -->
+  <div id="stress-panel" class="stress-panel" style="display:none">
+    <div class="stat-box">
+      <div class="stat-label">当前表现</div>
+      <div class="stat-value stat-blue" id="stat-current-perf">0%</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">同伴平均</div>
+      <div class="stat-value stat-red" id="stat-peer-avg">78%</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">目标表现</div>
+      <div class="stat-value stat-red" id="stat-target">85%</div>
+    </div>
+  </div>
+
+  <!-- Non-stress hint -->
+  <div id="nonstress-hint" class="nonstress-hint">
+    请计算结果并按 <kbd>Enter</kbd> 提交。本阶段反馈为中性，不显示同伴比较。
+  </div>
+
+  <!-- Problem area -->
+  <div class="math-card card">
+    <div id="math-expression" class="expression"></div>
+    <div class="answer-box">
+      <span id="math-answer" class="answer-text"></span><span class="cursor-blink">|</span>
+    </div>
+    <p class="hint">输入数字后按 <kbd>Enter</kbd>；<kbd>Backspace</kbd> 删除</p>
+  </div>
+
+  <!-- Deadline bar -->
+  <div class="deadline-area">
+    <div class="progress-bar-bg deadline-bar-bg">
+      <div id="deadline-bar" class="progress-bar-fill progress-blue"></div>
+    </div>
+    <p id="deadline-text" class="muted">请在进度条结束前作答</p>
+  </div>
+
+  <div id="skip-hint-math" class="skip-hint">S 跳过</div>
+</div>
+
+<!-- ==================== Screen: Feedback Overlay ==================== -->
+<div id="screen-feedback" class="screen" style="display:none">
+  <div class="feedback-overlay">
+    <div class="feedback-card card">
+      <p id="feedback-text" class="feedback-text"></p>
+      <p id="feedback-detail" class="feedback-detail muted"></p>
+    </div>
+  </div>
+  <div id="skip-hint-feedback" class="skip-hint">S 跳过</div>
+</div>
+
+<!-- ==================== Screen: VAS ==================== -->
+<div id="screen-vas" class="screen" style="display:none">
+  <div class="card card-large">
+    <div class="card-body text-center">
+      <p class="vas-title">请评价你此刻的主观焦虑 / 压力水平</p>
+      <div class="vas-scale">
+        <span class="vas-end-label">0<br>完全没有</span>
+        <div class="vas-bar-container" id="vas-bar-container">
+          <div class="vas-bar" id="vas-bar">
+            <div class="vas-ticks" id="vas-ticks"></div>
+          </div>
+          <div class="vas-marker" id="vas-marker" style="display:none"></div>
+        </div>
+        <span class="vas-end-label">100<br>非常强烈</span>
+      </div>
+      <p id="vas-value-display" class="vas-value"></p>
+      <p class="muted">点击横线选择 0-100 评分</p>
+    </div>
+    <div class="card-footer">
+      <p class="hint">按 <kbd>空格</kbd> 确认；按 <kbd>S</kbd> 跳过</p>
+    </div>
+  </div>
+  <div id="skip-hint-vas" class="skip-hint">S 跳过</div>
+</div>
+
+<!-- ==================== Screen: Fixation (brief, between trials) ==================== -->
+<div id="screen-fixation" class="screen" style="display:none">
+  <div class="fixation-standalone">+</div>
+</div>
+
+<!-- ==================== Screen: End ==================== -->
+<div id="screen-end" class="screen" style="display:none">
+  <div class="card card-large">
+    <div class="card-header accent-green">
+      <h1>实验结束</h1>
+    </div>
+    <div class="card-body text-center">
+      <p>感谢你的参与。</p>
+      <br>
+      <p class="muted">本实验中的同伴平均表现和目标表现用于构造任务情境，<br>并不代表对你个人能力的真实评价。</p>
+      <br>
+      <p>行为数据已保存至：</p>
+      <p id="end-csv-path" class="muted" style="word-break:break-all"></p>
+    </div>
+    <div class="card-footer">
+      <p class="hint">按 <kbd>空格</kbd> 退出</p>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Screen: Abort ==================== -->
+<div id="screen-abort" class="screen" style="display:none">
+  <div class="card card-large">
+    <div class="card-header accent-red">
+      <h1>实验已中止</h1>
+    </div>
+    <div class="card-body text-center">
+      <p>已保存当前日志：</p>
+      <p id="abort-csv-path" class="muted" style="word-break:break-all"></p>
+    </div>
+    <div class="card-footer">
+      <p class="hint">按 <kbd>空格</kbd> 退出</p>
+    </div>
+  </div>
+</div>
+
+<script src="/static/experiment.js?v=20260714-2"></script>
+</body>
+</html>

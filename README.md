@@ -11,6 +11,7 @@
 - `UserData/Sample_Data/`: OpenBCI GUI 示例数据。
 - `BridgeTools/`: ADS129x 到 BrainFlow Streaming Board 的桥接脚本。
 - `AnalysisTools/`: EEG 数据过滤和离线分析脚本。
+- `experiment_web/`: MIST 实验网页、OpenBCI GUI 控制客户端和自动化测试。
 
 没有上传 `UserData/Recordings/`、`UserData/Console_Data/`、`downloads/`、`build_check/`、`Processing-3.5.4/` 等目录，因为它们分别是个人录制数据、运行日志、下载缓存、编译输出和本机安装包。
 
@@ -57,7 +58,7 @@ ADS1299 16ch (WiFi TCP)
 ```
 
 5. 设置 `LISTEN PORT`，默认 `1234`。
-6. 选择和采集板一致的采样率：`250Hz`、`500Hz` 或 `1000Hz`。
+6. 选择和采集板一致的采样率：`250Hz`、`500Hz`、`1000Hz` 或 `2000Hz`。
 7. 点击 `START SESSION`，然后启动数据流。
 
 GUI 会监听：
@@ -132,10 +133,22 @@ python tools\ads129x_fake_sender.py --host 127.0.0.1 --port 1234 --rate 250 --ba
 GUI 默认把数据和配置写到：
 
 ```text
-D:\OpenBCI_GUI_ADS1299\UserData
+%LOCALAPPDATA%\OpenBCI_GUI_ADS1299\UserData
 ```
 
-如果把项目放在其他路径，可以根据需要修改 `Source\OpenBCI_GUI\DirectoryManager.pde` 里的 `guiDataPath`，然后重新运行或重新导出应用。
+如果旧版的 `D:\OpenBCI_GUI_ADS1299\UserData` 已经存在，程序会继续使用该目录，避免已有设置和录制数据迁移后丢失。
+
+如果需要把录制和配置保存到其他磁盘，请设置用户环境变量 `OPENBCI_GUI_DATA_DIR`。例如保存到 O 盘：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+    "OPENBCI_GUI_DATA_DIR",
+    "O:\OpenBCI_GUI_ADS1299\UserData",
+    "User"
+)
+```
+
+设置后需要退出并重新启动 GUI。程序启动时会自动创建 `Recordings`、`Settings`、`Console_Data` 和 `Sample_Data` 子目录，不再依赖固定的 `D:` 盘符。
 
 仓库不会保存个人录制数据。需要共享实验数据时，请单独整理脱敏后的数据文件，并避免把几十 GB 的原始录制直接提交进 Git。
 

@@ -43,8 +43,9 @@ class W_fft extends Widget {
 
     int xLim = xLimOptions[2];  //maximum value of x axis ... in this case 20 Hz, 40 Hz, 60 Hz, 120 Hz
     int xMax = xLimOptions[xLimOptions.length-1];   //maximum possible frequency in FFT
-    int FFT_indexLim = int(1.0*xMax*(getNfftSafe()/currentBoard.getSampleRate()));   // maxim value of FFT index
+    int FFT_indexLim = calculateFFTPointCount(xLim);
     int yLim = yLimOptions[2];  //maximum value of y axis ... 100 uV
+    long lastFFTDataGeneration = -1;
 
     List<controlP5.Controller> cp5ElementsToCheck = new ArrayList<controlP5.Controller>();
 
@@ -124,12 +125,15 @@ class W_fft extends Widget {
         float sr = currentBoard.getSampleRate();
         int nfft = getNfftSafe();
 
-        //update the points of the FFT channel arrays for all channels
-        for (int i = 0; i < fft_points.length; i++) {
-            for (int j = 0; j < FFT_indexLim + 2; j++) {  //loop through frequency domain data, and store into points array
-                GPoint powerAtBin = new GPoint((1.0*sr/nfft)*j, fftBuff[i].getBand(j));
-                fft_points[i].set(j, powerAtBin);
+        // FFT data only changes with the DSP snapshot. Update just the bins
+        // inside the selected x-axis range and reuse existing GPoint storage.
+        if (lastFFTDataGeneration != dataProcessingGeneration) {
+            for (int i = 0; i < fft_points.length; i++) {
+                for (int j = 0; j < FFT_indexLim; j++) {
+                    fft_points[i].set(j, (1.0*sr/nfft)*j, fftBuff[i].getBand(j), "");
+                }
             }
+            lastFFTDataGeneration = dataProcessingGeneration;
         }
 
         //Update channel select checkboxes and active channels
@@ -207,13 +211,35 @@ class W_fft extends Widget {
             fft_plot.setOuterDim(w, h + navHeight);
         }
     }
+
+    private int calculateFFTPointCount(int maxFrequency) {
+        int nfft = getNfftSafe();
+        int requestedBins = (int)Math.ceil(maxFrequency * nfft / (double)currentBoard.getSampleRate()) + 1;
+        return min(nfft/2 + 1, max(2, requestedBins));
+    }
+
+    void setMaxFrequency(int maxFrequency) {
+        xLim = maxFrequency;
+        fft_plot.setXLim(0.1, xLim);
+        int newPointCount = calculateFFTPointCount(xLim);
+        if (newPointCount != FFT_indexLim) {
+            FFT_indexLim = newPointCount;
+            for (int channel = 0; channel < fft_points.length; channel++) {
+                fft_points[channel] = new GPointsArray(FFT_indexLim);
+                for (int bin = 0; bin < FFT_indexLim; bin++) {
+                    fft_points[channel].set(bin, (1.0*currentBoard.getSampleRate()/getNfftSafe())*bin, 0, "");
+                }
+            }
+        }
+        lastFFTDataGeneration = -1;
+    }
 };
 
 //These functions need to be global! These functions are activated when an item from the corresponding dropdown is selected
 //triggered when there is an event in the MaxFreq. Dropdown
 void MaxFreq(int n) {
     /* request the selected item based on index n */
-    w_fft.fft_plot.setXLim(0.1, w_fft.xLimOptions[n]); //update the xLim of the FFT_Plot
+    w_fft.setMaxFrequency(w_fft.xLimOptions[n]); //update plot range and visible FFT bins
     settings.fftMaxFrqSave = n; //save the xLim to variable for save/load settings
 }
 
